@@ -2,15 +2,20 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::Html,
     routing::{get, post, put},
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 
 use crate::{
     domain::{
         AdminProcessingOverview, AgentListResponse, ArticleListResponse, ArticleQuery,
-        AssignAgentRequest, BookmarkRequest, CreateSourceRequest, HealthResponse,
+        AssignAgentRequest, CreateSourceRequest, FavoriteRequest, HealthResponse,
         RetryBatchRequest, RetryResult, SourceListResponse, UpdateSourceRequest,
     },
     state::{ApiError, AppState},
@@ -28,7 +33,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sources/{id}/agent", put(assign_agent))
         .route("/api/articles", get(list_articles))
         .route("/api/articles/{id}", get(get_article))
+        .route("/api/articles/{id}/favorite", put(set_favorite))
         .route("/api/articles/{id}/bookmark", put(set_bookmark))
+        .route("/api/favorites", get(list_favorites))
         .route("/api/bookmarks", get(list_bookmarks))
         .route("/api/admin/processing", get(admin_processing))
         .route(
@@ -36,6 +43,10 @@ pub fn build_router(state: AppState) -> Router {
             post(retry_article_processing),
         )
         .route("/api/admin/batches/retry", post(retry_batch_processing))
+        .nest_service("/assets", ServeDir::new("web/dist/assets"))
+        .route_service("/favicon.svg", ServeFile::new("web/dist/favicon.svg"))
+        .route_service("/icons.svg", ServeFile::new("web/dist/icons.svg"))
+        .fallback(get(frontend_index))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -118,21 +129,33 @@ async fn get_article(
 async fn set_bookmark(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(request): Json<BookmarkRequest>,
+    Json(request): Json<FavoriteRequest>,
 ) -> Result<Json<crate::domain::ArticleDetail>, ApiError> {
-    Ok(Json(state.set_bookmark(id, request.bookmarked).await?))
+    let favorited = request.favorite_state().ok_or_else(|| {
+        ApiError::Validation("favorite request must include `favorited`".to_string())
+    })?;
+    Ok(Json(state.set_bookmark(id, favorited).await?))
+}
+
+async fn set_favorite(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<FavoriteRequest>,
+) -> Result<Json<crate::domain::ArticleDetail>, ApiError> {
+    set_favorite_inner(state, id, request).await.map(Json)
 }
 
 async fn list_bookmarks(
     State(state): State<AppState>,
 ) -> Result<Json<ArticleListResponse>, ApiError> {
+    list_favorites(State(state)).await
+}
+
+async fn list_favorites(
+    State(state): State<AppState>,
+) -> Result<Json<ArticleListResponse>, ApiError> {
     Ok(Json(ArticleListResponse {
-        items: state
-            .list_articles(ArticleQuery {
-                source_id: None,
-                bookmarked: Some(true),
-            })
-            .await?,
+        items: state.list_favorites().await?,
     }))
 }
 
@@ -158,6 +181,24 @@ async fn retry_batch_processing(
     Ok(Json(RetryResult {
         retried: state.retry_batch_processing(&request.batch_name).await?,
     }))
+}
+
+async fn frontend_index() -> Result<Html<String>, StatusCode> {
+    let html = tokio::fs::read_to_string("web/dist/index.html")
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Html(html))
+}
+
+async fn set_favorite_inner(
+    state: AppState,
+    id: Uuid,
+    request: FavoriteRequest,
+) -> Result<crate::domain::ArticleDetail, ApiError> {
+    let favorited = request.favorite_state().ok_or_else(|| {
+        ApiError::Validation("favorite request must include `favorited`".to_string())
+    })?;
+    state.set_favorite(id, favorited).await
 }
 
 #[cfg(test)]
@@ -327,7 +368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn toggles_bookmarks_and_lists_archive() {
+    async fn toggles_favorites_and_lists_favorites_collection() {
         let (_temp_dir, state) = test_state().await;
         let source = state
             .create_source(CreateSourceRequest {
@@ -357,41 +398,43 @@ mod tests {
             .unwrap();
         let app = build_router(state);
 
-        let bookmark_response = app
+        let favorite_response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/api/articles/{article_id}/bookmark"))
+                    .uri(format!("/api/articles/{article_id}/favorite"))
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"bookmarked":true}"#))
+                    .body(Body::from(r#"{"favorited":true}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(bookmark_response.status(), StatusCode::OK);
-        let bookmark_bytes = to_bytes(bookmark_response.into_body(), usize::MAX)
+        assert_eq!(favorite_response.status(), StatusCode::OK);
+        let favorite_bytes = to_bytes(favorite_response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let bookmarked_article: ArticleDetail = serde_json::from_slice(&bookmark_bytes).unwrap();
-        assert!(bookmarked_article.bookmarked);
+        let favorited_article: ArticleDetail = serde_json::from_slice(&favorite_bytes).unwrap();
+        assert!(favorited_article.favorited);
+        assert!(favorited_article.bookmarked);
 
-        let archive_response = app
+        let favorites_response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/bookmarks")
+                    .uri("/api/favorites")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(archive_response.status(), StatusCode::OK);
-        let archive_bytes = to_bytes(archive_response.into_body(), usize::MAX)
+        assert_eq!(favorites_response.status(), StatusCode::OK);
+        let favorites_bytes = to_bytes(favorites_response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let archive: ArticleListResponse = serde_json::from_slice(&archive_bytes).unwrap();
-        assert_eq!(archive.items.len(), 1);
-        assert_eq!(archive.items[0].id, article_id);
+        let favorites: ArticleListResponse = serde_json::from_slice(&favorites_bytes).unwrap();
+        assert_eq!(favorites.items.len(), 1);
+        assert_eq!(favorites.items[0].id, article_id);
+        assert!(favorites.items[0].favorited);
     }
 
     #[tokio::test]
@@ -597,6 +640,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unfavorited_article_returns_to_normal_retention_rules() {
+        let (_temp_dir, state) = test_state().await;
+        let app = build_router(state.clone());
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Favorites Retention".to_string()),
+                feed_url: "https://example.com/favorites-retention.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let old_article_id = Uuid::new_v4();
+        let now = Utc::now();
+        state
+            .apply_source_fetch_update(
+                source.id,
+                crate::db::SourceFetchUpdate {
+                    last_fetch_at: Some(now),
+                    next_fetch_at: now + chrono::Duration::hours(12),
+                    etag: None,
+                    last_modified: None,
+                    validation_status: "validated".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        state
+            .insert_article(Article {
+                id: old_article_id,
+                source_id: source.id,
+                title: "Old favorite".to_string(),
+                summary: "Saved, then removed".to_string(),
+                url: "https://example.com/articles/old-favorite".to_string(),
+                published_at: Some(now - chrono::Duration::days(40)),
+                fetched_at: now - chrono::Duration::days(40),
+                bookmarked: true,
+                llm_status: ProcessingStatus::Done,
+                llm_summary: Some("Still summarized".to_string()),
+                llm_error: None,
+            })
+            .await
+            .unwrap();
+
+        let unfavorite_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/articles/{old_article_id}/favorite"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"favorited":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unfavorite_response.status(), StatusCode::OK);
+
+        let scheduler = Scheduler::with_fetcher(
+            state.clone(),
+            Arc::new(FakeFetcher {
+                responses: Mutex::new(VecDeque::new()),
+            }),
+        );
+        assert_eq!(scheduler.run_once().await.unwrap(), 0);
+
+        let detail_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/articles/{old_article_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn favorite_operations_preserve_llm_state_and_output() {
+        let (_temp_dir, state) = test_state().await;
+        let app = build_router(state.clone());
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("LLM Integrity".to_string()),
+                feed_url: "https://example.com/llm-integrity.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let article_id = Uuid::new_v4();
+        state
+            .insert_article(Article {
+                id: article_id,
+                source_id: source.id,
+                title: "Preserve state".to_string(),
+                summary: "Favorite should not reset analysis.".to_string(),
+                url: "https://example.com/articles/preserve-state".to_string(),
+                published_at: Some(Utc::now()),
+                fetched_at: Utc::now(),
+                bookmarked: false,
+                llm_status: ProcessingStatus::Done,
+                llm_summary: Some("Existing summary".to_string()),
+                llm_error: Some("historic error".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/articles/{article_id}/favorite"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"favorited":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: ArticleDetail = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload.favorited);
+        assert_eq!(payload.llm_status, ProcessingStatus::Done);
+        assert_eq!(payload.llm_summary.as_deref(), Some("Existing summary"));
+        assert_eq!(payload.llm_error.as_deref(), Some("historic error"));
+    }
+
+    #[tokio::test]
     async fn admin_processing_api_lists_and_retries_jobs() {
         let (_temp_dir, state) = test_state().await;
         let source = state
@@ -716,6 +890,30 @@ mod tests {
         assert_eq!(overview_after.failed_jobs.len(), 0);
         assert_eq!(overview_after.pending_jobs.len(), 1);
         assert_eq!(overview_after.pending_jobs[0].article_id, article.id);
+    }
+
+    #[tokio::test]
+    async fn frontend_routes_fallback_to_index_html() {
+        let (_temp_dir, state) = test_state().await;
+        let app = build_router(state);
+
+        let root_response = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root_response.status(), StatusCode::OK);
+
+        let nested_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/reader/bookmarks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(nested_response.status(), StatusCode::OK);
     }
 
     async fn test_state() -> (TempDir, AppState) {

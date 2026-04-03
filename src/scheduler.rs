@@ -557,6 +557,7 @@ mod tests {
         let first_batch = state
             .list_articles(crate::domain::ArticleQuery {
                 source_id: Some(source.id),
+                favorited: None,
                 bookmarked: None,
             })
             .await
@@ -581,6 +582,7 @@ mod tests {
         let second_batch = state
             .list_articles(crate::domain::ArticleQuery {
                 source_id: Some(source.id),
+                favorited: None,
                 bookmarked: None,
             })
             .await
@@ -679,6 +681,7 @@ mod tests {
         let all_articles = state
             .list_articles(crate::domain::ArticleQuery {
                 source_id: Some(source.id),
+                favorited: None,
                 bookmarked: None,
             })
             .await

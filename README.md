@@ -168,19 +168,38 @@ npm run build
 目前前端已包含：
 
 - dark mode dashboard
-- 全來源 stream 與 bookmarks 視圖
+- 全來源 stream 與 favorites 視圖
 - 來源管理：新增、編輯、啟用/停用、刪除、agent 指派
 - 文章清單與文章詳情閱讀
 - LLM 狀態、摘要、錯誤顯示
 - 收藏切換與永久收藏檢視
 
+## Favorites API
+
+後端已把收藏提升成正式能力，前端與其他 client 應優先使用：
+
+- `GET /api/favorites`
+- `PUT /api/articles/{id}/favorite`
+- `GET /api/articles?favorited=true`
+
+相容性考量下，舊的 bookmark alias 仍保留：
+
+- `GET /api/bookmarks`
+- `PUT /api/articles/{id}/bookmark`
+- `GET /api/articles?bookmarked=true`
+
+response 目前同時回傳：
+
+- `favorited`: 正式收藏語意
+- `bookmarked`: 舊欄位 alias
+
 ## Deployment Notes
 
 單機部署最簡單：
 
-1. 啟動 Axum binary
-2. 以任意靜態檔案伺服器提供 `web/dist`
-3. 讓前端透過 `/api` 反向代理到 Axum
+1. 在 `web/` 執行 `npm run build`
+2. 啟動 Axum binary
+3. Axum 會直接提供 `web/dist`，且所有非 `/api` 路徑都會 fallback 到前端 `index.html`
 4. 提供 `~/.config/towa/config.toml` 與 `GEMINI_API_KEY`
 
 如果只想先驗證抓取與 API，可不提供 `GEMINI_API_KEY`。

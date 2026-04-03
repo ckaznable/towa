@@ -77,6 +77,7 @@ pub struct ArticleListItem {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
 }
@@ -96,6 +97,7 @@ pub struct ArticleDetail {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
     pub llm_summary: Option<String>,
@@ -125,12 +127,14 @@ pub struct AssignAgentRequest {
 #[derive(Debug, Deserialize)]
 pub struct ArticleQuery {
     pub source_id: Option<Uuid>,
+    pub favorited: Option<bool>,
     pub bookmarked: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BookmarkRequest {
-    pub bookmarked: bool,
+pub struct FavoriteRequest {
+    pub favorited: Option<bool>,
+    pub bookmarked: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -196,6 +200,7 @@ impl ArticleDetail {
             url: article.url,
             published_at: article.published_at,
             fetched_at: article.fetched_at,
+            favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
             llm_summary: article.llm_summary,
@@ -215,8 +220,21 @@ impl ArticleListItem {
             url: article.url,
             published_at: article.published_at,
             fetched_at: article.fetched_at,
+            favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
         }
+    }
+}
+
+impl ArticleQuery {
+    pub fn favorite_filter(&self) -> Option<bool> {
+        self.favorited.or(self.bookmarked)
+    }
+}
+
+impl FavoriteRequest {
+    pub fn favorite_state(&self) -> Option<bool> {
+        self.favorited.or(self.bookmarked)
     }
 }

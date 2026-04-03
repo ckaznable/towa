@@ -29,6 +29,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0004_processing_observability",
         include_str!("../migrations/0004_processing_observability.sql"),
     ),
+    (
+        "0005_article_favorites",
+        include_str!("../migrations/0005_article_favorites.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -526,8 +530,8 @@ impl Database {
             })
             .filter(|row| {
                 query
-                    .bookmarked
-                    .is_none_or(|bookmarked| row.article.bookmarked == bookmarked)
+                    .favorite_filter()
+                    .is_none_or(|favorited| row.article.bookmarked == favorited)
             })
             .map(|row| ArticleListItem::from_article(row.article, row.source_title))
             .collect::<Vec<_>>();
@@ -543,14 +547,14 @@ impl Database {
             .map(|row| ArticleDetail::from_article(row.article, row.source_title)))
     }
 
-    pub async fn set_bookmark(&self, id: Uuid, bookmarked: bool) -> Result<bool, DbError> {
+    pub async fn set_favorite(&self, id: Uuid, favorited: bool) -> Result<bool, DbError> {
         let path = self.path.clone();
         self.run_blocking(move || {
             let connection = open_connection(path.as_ref())?;
             let affected = connection
                 .execute(
                     "UPDATE articles SET bookmarked = ?2 WHERE id = ?1",
-                    params![id.to_string(), bool_to_int(bookmarked)],
+                    params![id.to_string(), bool_to_int(favorited)],
                 )
                 .map_err(sql_error)?;
             Ok(affected > 0)
@@ -558,7 +562,7 @@ impl Database {
         .await
     }
 
-    pub async fn delete_expired_unbookmarked_articles(
+    pub async fn delete_expired_non_favorited_articles(
         &self,
         cutoff: DateTime<Utc>,
     ) -> Result<usize, DbError> {

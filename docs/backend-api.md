@@ -168,6 +168,7 @@ http://127.0.0.1:3000
 支援 query:
 
 - `source_id=<uuid>`
+- `favorited=true|false`
 - `bookmarked=true|false`
 
 ```json
@@ -182,6 +183,7 @@ http://127.0.0.1:3000
       "url": "https://example.com/articles/tokio-2",
       "published_at": "2026-03-31T15:10:00Z",
       "fetched_at": "2026-03-31T15:12:00Z",
+      "favorited": false,
       "bookmarked": false,
       "llm_status": "pending"
     }
@@ -201,6 +203,7 @@ http://127.0.0.1:3000
   "url": "https://example.com/articles/tokio-2",
   "published_at": "2026-03-31T15:10:00Z",
   "fetched_at": "2026-03-31T15:12:00Z",
+  "favorited": false,
   "bookmarked": false,
   "llm_status": "failed",
   "llm_summary": null,
@@ -215,19 +218,32 @@ LLM 狀態語意：
 - `done`: 已成功寫入 `llm_summary`。
 - `failed`: 已達重試上限，錯誤保留在 `llm_error`。
 
-### Bookmarks
+### Favorites
 
-`PUT /api/articles/{id}/bookmark`
+`PUT /api/articles/{id}/favorite`
 
 ```json
 {
-  "bookmarked": true
+  "favorited": true
 }
 ```
 
-`GET /api/bookmarks`
+`GET /api/favorites`
 
-等同於 `GET /api/articles?bookmarked=true`
+等同於 `GET /api/articles?favorited=true`
+
+相容 alias 仍保留：
+
+- `PUT /api/articles/{id}/bookmark`
+- `GET /api/bookmarks`
+
+舊 client 若仍使用 `bookmarked` request/response 欄位仍可運作，但新 client 應優先使用 `favorited` 與 `/api/favorites`。
+
+收藏語意：
+
+- `favorited = true` 的文章不受一般 30 天清理影響
+- 取消收藏後，文章重新回到一般 retention 規則
+- 收藏操作不會改動 `source_id`、`llm_status`、`llm_summary`、`llm_error`
 
 ### Admin Processing
 

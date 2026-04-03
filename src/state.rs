@@ -293,10 +293,14 @@ impl AppState {
         id: Uuid,
         bookmarked: bool,
     ) -> Result<ArticleDetail, ApiError> {
+        self.set_favorite(id, bookmarked).await
+    }
+
+    pub async fn set_favorite(&self, id: Uuid, favorited: bool) -> Result<ArticleDetail, ApiError> {
         let updated = self
             .inner
             .database
-            .set_bookmark(id, bookmarked)
+            .set_favorite(id, favorited)
             .await
             .map_err(internal_error)?;
         if !updated {
@@ -305,13 +309,22 @@ impl AppState {
         self.get_article(id).await
     }
 
+    pub async fn list_favorites(&self) -> Result<Vec<ArticleListItem>, ApiError> {
+        self.list_articles(ArticleQuery {
+            source_id: None,
+            favorited: Some(true),
+            bookmarked: None,
+        })
+        .await
+    }
+
     pub async fn cleanup_expired_articles(
         &self,
         cutoff: chrono::DateTime<Utc>,
     ) -> Result<usize, ApiError> {
         self.inner
             .database
-            .delete_expired_unbookmarked_articles(cutoff)
+            .delete_expired_non_favorited_articles(cutoff)
             .await
             .map_err(internal_error)
     }
