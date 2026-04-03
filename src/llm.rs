@@ -6,6 +6,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::time;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
@@ -329,17 +330,18 @@ impl BatchProvider for GeminiBatchClient {
             return Err(LlmWorkerError::Provider(http_error(response).await));
         }
 
-        let operation = response
-            .json::<GeminiOperation>()
-            .await
-            .map_err(provider_error)?;
-        if operation.name.trim().is_empty() {
+        let batch = parse_json_response::<GeminiBatchCreateResponse>(
+            response,
+            "gemini batch submit response",
+        )
+        .await?;
+        if batch.name.trim().is_empty() {
             return Err(LlmWorkerError::Provider(
                 "gemini batch create response did not include an operation name".to_string(),
             ));
         }
 
-        Ok(operation.name)
+        Ok(batch.name)
     }
 
     async fn poll_batch(&self, batch_name: &str) -> Result<BatchPollResult, LlmWorkerError> {
@@ -362,11 +364,9 @@ impl BatchProvider for GeminiBatchClient {
             return Err(LlmWorkerError::Provider(http_error(response).await));
         }
 
-        let operation = response
-            .json::<GeminiOperation>()
-            .await
-            .map_err(provider_error)?;
-        if !operation.done {
+        let operation =
+            parse_json_response::<GeminiOperation>(response, "gemini batch poll response").await?;
+        if !operation.is_done() {
             return Ok(BatchPollResult::Pending);
         }
         if let Some(error) = operation.error {
@@ -459,6 +459,27 @@ fn api_error(error: ApiError) -> LlmWorkerError {
     LlmWorkerError::Api(error.to_string())
 }
 
+async fn parse_json_response<T>(
+    response: reqwest::Response,
+    context: &'static str,
+) -> Result<T, LlmWorkerError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let status = response.status();
+    let body = response.text().await.map_err(provider_error)?;
+    serde_json::from_str::<T>(&body).map_err(|error| {
+        debug!(
+            status = %status,
+            response_context = context,
+            raw_body = %body,
+            decode_error = %error,
+            "failed to decode gemini response body"
+        );
+        LlmWorkerError::Provider(format!("{context}: error decoding response body: {error}"))
+    })
+}
+
 async fn http_error(response: reqwest::Response) -> String {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -526,11 +547,17 @@ struct GeminiPart {
 }
 
 #[derive(Debug, Deserialize)]
-struct GeminiOperation {
+struct GeminiBatchCreateResponse {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiOperation {
+    #[serde(default)]
     done: bool,
     error: Option<GoogleStatus>,
     response: Option<GeminiOperationResponse>,
+    metadata: Option<GeminiBatchMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -550,6 +577,11 @@ struct GeminiInlineResponse {
     metadata: Option<GeminiRequestMetadata>,
     error: Option<GoogleStatus>,
     response: Option<GeminiGenerateContentResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiBatchMetadata {
+    state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,6 +609,31 @@ struct GeminiTextPart {
 #[derive(Debug, Deserialize)]
 struct GoogleStatus {
     message: String,
+}
+
+impl GeminiOperation {
+    fn is_done(&self) -> bool {
+        self.done
+            || self
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.state.as_deref())
+                .is_some_and(is_terminal_batch_state)
+    }
+}
+
+fn is_terminal_batch_state(state: &str) -> bool {
+    matches!(
+        state,
+        "JOB_STATE_SUCCEEDED"
+            | "JOB_STATE_FAILED"
+            | "JOB_STATE_CANCELLED"
+            | "JOB_STATE_EXPIRED"
+            | "BATCH_STATE_SUCCEEDED"
+            | "BATCH_STATE_FAILED"
+            | "BATCH_STATE_CANCELLED"
+            | "BATCH_STATE_EXPIRED"
+    )
 }
 
 #[cfg(test)]
@@ -751,6 +808,37 @@ mod tests {
             terminal_failure.llm_error.as_deref(),
             Some("quota exceeded again")
         );
+    }
+
+    #[test]
+    fn parses_gemini_batch_create_response_without_done_field() {
+        let payload = r#"{
+          "name": "batches/example-batch",
+          "metadata": {
+            "state": "BATCH_STATE_PENDING"
+          }
+        }"#;
+
+        let parsed: GeminiBatchCreateResponse = serde_json::from_str(payload).unwrap();
+        assert_eq!(parsed.name, "batches/example-batch");
+    }
+
+    #[test]
+    fn treats_terminal_metadata_state_as_done() {
+        let payload = r#"{
+          "name": "batches/example-batch",
+          "metadata": {
+            "state": "JOB_STATE_SUCCEEDED"
+          },
+          "response": {
+            "inlinedResponses": {
+              "inlinedResponses": []
+            }
+          }
+        }"#;
+
+        let parsed: GeminiOperation = serde_json::from_str(payload).unwrap();
+        assert!(parsed.is_done());
     }
 
     async fn test_state(retry_limit: u32) -> (TempDir, AppState) {
