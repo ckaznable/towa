@@ -22,7 +22,7 @@ function goToSettings() {
     <!-- Sidebar: Navigation and Branding (Global) -->
     <aside class="sidebar">
       <div class="brand-section">
-        <h1 class="brand-name">TOWA</h1>
+        <h1 class="brand-name">永遠</h1>
       </div>
       
       <nav class="nav-menu">

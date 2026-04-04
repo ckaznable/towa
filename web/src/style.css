@@ -284,7 +284,6 @@ button {
   font-size: 1.2rem; /* Adjusted for CJK readability */
   line-height: 1.8; /* Optimized for CJK text block */
   color: var(--text-secondary);
-  max-width: 800px;
 }
 
 /* Settings */

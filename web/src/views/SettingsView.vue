@@ -13,8 +13,10 @@ const props = defineProps<{
 
 const router = useRouter()
 
-type SettingsTab = 'sources' | 'agents' | 'system'
-const activeTab = computed(() => (props.tab as SettingsTab) || 'sources')
+type SettingsTab = 'sources' | 'agents'
+const activeTab = computed<SettingsTab>(() =>
+  props.tab === 'agents' ? 'agents' : 'sources',
+)
 
 const sources = ref<Source[]>([])
 const agents = ref<AgentSummary[]>([])
@@ -123,17 +125,7 @@ function closeSettings() {
           <button class="settings-nav-item" :class="{ active: activeTab === 'agents' }" @click="setTab('agents')">
             Agents
           </button>
-          <button class="settings-nav-item" :class="{ active: activeTab === 'system' }" @click="setTab('system')">
-            System
-          </button>
         </nav>
-
-        <div style="margin-top: auto;">
-          <div class="health-indicator">
-            <span class="status-dot healthy"></span>
-            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">System Healthy</span>
-          </div>
-        </div>
       </aside>
 
       <main class="settings-content">
@@ -141,8 +133,7 @@ function closeSettings() {
           <div>
             <p class="kicker">{{ activeTab.toUpperCase() }}</p>
             <h2 class="serif-text" style="font-size: 3rem; margin-top: 0.5rem; line-height: 1;">
-              {{ activeTab === 'sources' ? 'Source Management' : 
-                 activeTab === 'agents' ? 'Routing Intelligence' : 'Telemetry' }}
+              {{ activeTab === 'sources' ? 'Source Management' : 'Routing Intelligence' }}
             </h2>
           </div>
           <div style="display: flex; gap: 1rem;">
@@ -226,31 +217,6 @@ function closeSettings() {
                 </div>
               </div>
             </article>
-          </div>
-        </div>
-
-        <!-- Tab: System -->
-        <div v-if="activeTab === 'system'" class="settings-section">
-          <header class="settings-section-header">
-            <p class="kicker">Telemetry & Health</p>
-            <h3>Node Resource Utilization</h3>
-          </header>
-          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem;">
-            <div class="key-entities" style="padding: 2rem;">
-              <p class="kicker">Database</p>
-              <div style="font-size: 2rem; margin-top: 1rem;" class="serif-text">12ms</div>
-              <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">Latency</p>
-            </div>
-            <div class="key-entities" style="padding: 2rem;">
-              <p class="kicker">Index</p>
-              <div style="font-size: 2rem; margin-top: 1rem;" class="serif-text">24%</div>
-              <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">Utilization</p>
-            </div>
-            <div class="key-entities" style="padding: 2rem;">
-              <p class="kicker">Storage</p>
-              <div style="font-size: 2rem; margin-top: 1rem;" class="serif-text">1.2 GB</div>
-              <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">/ 10 GB limit</p>
-            </div>
           </div>
         </div>
 
