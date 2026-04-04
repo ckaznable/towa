@@ -1,0 +1,14 @@
+.git
+.gitignore
+.codex
+.playwright-mcp
+target
+openspec
+docs
+settings-panel.png
+
+web/node_modules
+
+*.db
+*.sqlite
+*.sqlite3

@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
+FROM --platform=linux/arm64 docker.io/debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG BIN_PATH=container-bin/towa
+ARG BIN_NAME=towa
+
+WORKDIR /app
+COPY web/dist ./web/dist
+COPY ${BIN_PATH} /usr/local/bin/${BIN_NAME}
+RUN chmod +x /usr/local/bin/${BIN_NAME}
+
+ENTRYPOINT ["/usr/local/bin/towa"]

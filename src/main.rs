@@ -23,7 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(3000);
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let address = format!("{host}:{port}")
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid bind address `{host}:{port}`: {error}"))?;
 
     let state = AppState::new().await?;
     let config_path = state.config_path().display().to_string();
