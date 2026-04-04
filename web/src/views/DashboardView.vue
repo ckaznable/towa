@@ -48,6 +48,10 @@ const articleEmptyTitle = computed(() => {
   return 'No stories in this lane'
 })
 
+const visibleArticles = computed(() =>
+  articles.value.filter((article) => article.llm_status === 'done'),
+)
+
 onMounted(async () => {
   await bootstrap()
 })
@@ -100,9 +104,9 @@ async function refreshArticles(preserveSelection: boolean) {
   const nextId =
     preserveSelection &&
     selectedArticleId.value &&
-    nextArticles.some((article) => article.id === selectedArticleId.value)
+    visibleArticles.value.some((article) => article.id === selectedArticleId.value)
       ? selectedArticleId.value
-      : (nextArticles[0]?.id ?? null)
+      : (visibleArticles.value[0]?.id ?? null)
 
   selectedArticleId.value = nextId
   if (nextId) await loadArticleDetail(nextId)
@@ -171,12 +175,12 @@ function processingLabel(status: ProcessingStatus) {
     </header>
 
     <div class="feed-items-container">
-      <div v-if="!articles.length" class="empty-panel" style="min-height: auto; padding: 3rem 1rem;">
+      <div v-if="!visibleArticles.length" class="empty-panel" style="min-height: auto; padding: 3rem 1rem;">
         <p style="font-size: 0.9rem;">{{ articleEmptyTitle }}</p>
       </div>
 
       <article 
-        v-for="article in articles" 
+        v-for="article in visibleArticles" 
         :key="article.id" 
         class="feed-item" 
         :class="{ active: selectedArticleId === article.id }"
@@ -185,13 +189,9 @@ function processingLabel(status: ProcessingStatus) {
         <div class="item-meta">
           <span class="item-source">{{ article.source_title }}</span>
           <span>•</span>
-          <span class="item-time">{{ formatTimestamp(article.published_at ?? article.fetched_at) }}</span>
+          <span class="item-time">{{ formatTimestamp(article.available_at) }}</span>
         </div>
         <h3 class="item-title serif-text">{{ article.title }}</h3>
-        <div v-if="article.llm_status !== 'pending'" class="agent-preview">
-          <p v-if="article.llm_status === 'processing'">Intelligence analysis in progress...</p>
-          <p v-else>{{ article.summary?.slice(0, 80) }}...</p>
-        </div>
         <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">
           <span :class="['status-pill', `is-${article.llm_status}`]">
             {{ processingLabel(article.llm_status) }}
@@ -220,18 +220,14 @@ function processingLabel(status: ProcessingStatus) {
 
     <div v-else-if="articleDetail" class="content-area">
       <div class="article-meta">
-        {{ articleDetail.source_title }} • {{ formatTimestamp(articleDetail.published_at ?? articleDetail.fetched_at) }}
+        {{ articleDetail.source_title }} • {{ formatTimestamp(articleDetail.available_at) }}
       </div>
       <h1 class="article-title serif-text">{{ articleDetail.title }}</h1>
-      <h2 class="article-subtitle">AGENT INTERPRETATION</h2>
 
       <div class="article-body serif-text">
         <section v-if="articleDetail.llm_summary" class="key-entities" style="background-color: var(--surface-bright);">
-          <p class="kicker">Gemini Brief</p>
-          <p style="color: var(--text-primary); margin-top: 1rem; line-height: 1.6;">{{ articleDetail.llm_summary }}</p>
+          <p style="color: var(--text-primary); line-height: 1.8;">{{ articleDetail.llm_summary }}</p>
         </section>
-
-        <p v-if="articleDetail.summary" style="margin-top: 2rem; line-height: 1.8;">{{ articleDetail.summary }}</p>
 
         <div v-if="articleDetail.llm_error" class="key-entities" style="background-color: rgba(255, 110, 132, 0.08); margin-top: 4rem; padding: 2rem; border-radius: 24px;">
           <p class="kicker" style="color: var(--error); margin-bottom: 1rem;">Intelligence Synthesis Error</p>

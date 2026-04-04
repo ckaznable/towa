@@ -9,6 +9,7 @@
 - agent 清單與 Gemini batch 設定由 XDG `config.toml` 載入；若設定檔不存在，會使用內建 Gemini 預設值。
 - 背景 scheduler 會自動啟動，依 `next_fetch_at` 挑選來源抓取，支援 `ETag` / `Last-Modified` 條件式請求。
 - 若來源提供 `Cache-Control` 或 `Expires`，scheduler 會優先採用；否則使用內建 fallback 區間。
+- 目前 fallback 抓取區間最短為 `1` 小時，最長為 `6` 小時；fetch 失敗時以最短間隔重試。
 - scheduler 會對文章使用穩定 dedupe key，避免同一來源重複寫入相同文章。
 - 每輪背景工作都會先執行 retention cleanup：刪除超過 30 天且未收藏的文章，收藏文章不會被刪除。
 - 若來源有指派 agent，新文章會進入後處理工作佇列；worker 預設走 Gemini Batch API，並將每篇文章狀態、輸出與錯誤落地到 SQLite。
@@ -31,7 +32,7 @@
 ```toml
 [llm]
 api_key = "optional-inline-key"
-batch_poll_interval_seconds = 30
+batch_poll_interval_seconds = 300
 batch_submit_size = 16
 retry_limit = 3
 
@@ -183,6 +184,7 @@ http://127.0.0.1:3000
       "url": "https://example.com/articles/tokio-2",
       "published_at": "2026-03-31T15:10:00Z",
       "fetched_at": "2026-03-31T15:12:00Z",
+      "available_at": "2026-03-31T15:12:00Z",
       "favorited": false,
       "bookmarked": false,
       "llm_status": "pending"
@@ -203,6 +205,7 @@ http://127.0.0.1:3000
   "url": "https://example.com/articles/tokio-2",
   "published_at": "2026-03-31T15:10:00Z",
   "fetched_at": "2026-03-31T15:12:00Z",
+  "available_at": "2026-03-31T15:18:00Z",
   "favorited": false,
   "bookmarked": false,
   "llm_status": "failed",
@@ -217,6 +220,11 @@ LLM 狀態語意：
 - `processing`: 已送出 Gemini Batch API，等待結果。
 - `done`: 已成功寫入 `llm_summary`。
 - `failed`: 已達重試上限，錯誤保留在 `llm_error`。
+
+時間欄位語意：
+
+- `fetched_at`: 原始文章抓回並寫入本地的時間
+- `available_at`: 前端應視為可閱讀時間；若文章需經過 LLM，則以 batch 完成時間為準，否則回退到 `fetched_at`
 
 ### Favorites
 

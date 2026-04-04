@@ -532,6 +532,7 @@ mod tests {
             detail_payload.llm_summary.as_deref(),
             Some("LLM summary visible through the API."),
         );
+        assert!(detail_payload.available_at >= detail_payload.fetched_at);
     }
 
     #[tokio::test]

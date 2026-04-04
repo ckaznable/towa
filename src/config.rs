@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::domain::AgentSummary;
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
-const DEFAULT_BATCH_POLL_INTERVAL_SECONDS: u64 = 30;
+const DEFAULT_BATCH_POLL_INTERVAL_SECONDS: u64 = 300;
 const DEFAULT_BATCH_SUBMIT_SIZE: usize = 16;
 const DEFAULT_RETRY_LIMIT: u32 = 3;
 

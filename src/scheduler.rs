@@ -16,7 +16,7 @@ use crate::{
     state::{ApiError, AppState, FeedValidator, ValidatedFeed, ValidationError},
 };
 
-const MIN_FETCH_INTERVAL_MINUTES: i64 = 15;
+const MIN_FETCH_INTERVAL_MINUTES: i64 = 60;
 const MAX_FETCH_INTERVAL_HOURS: i64 = 6;
 const SCHEDULER_TICK_SECONDS: u64 = 30;
 const ARTICLE_RETENTION_DAYS: i64 = 30;

@@ -53,7 +53,7 @@ Towa 是一個單機自架的 RSS / Atom reader，包含：
 ```toml
 [llm]
 api_key = "optional-inline-key"
-batch_poll_interval_seconds = 30
+batch_poll_interval_seconds = 300
 batch_submit_size = 16
 retry_limit = 3
 
@@ -155,6 +155,12 @@ npm run build
 
 這讓 scheduler 優先尊重來源的 cache / expiry header，而不是固定頻率暴力抓取。
 
+fallback interval 目前邊界是：
+
+- 最短 `1` 小時
+- 最長 `6` 小時
+- fetch 失敗時以最短間隔重試
+
 ## Article Retention
 
 - 一般文章：預設保留 30 天
@@ -184,6 +190,8 @@ npm run build
 - 文章清單與文章詳情閱讀
 - LLM 狀態、摘要、錯誤顯示
 - 收藏切換與永久收藏檢視
+
+前端文章流目前只顯示 `llm_status = done` 的項目；若文章需經過 LLM，排序與顯示時間以 `available_at` 為準，也就是 batch 完成回寫時間，而不是原始抓取時間。
 
 ## Favorites API
 

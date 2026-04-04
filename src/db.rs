@@ -54,6 +54,7 @@ pub enum DbError {
 struct ArticleRow {
     article: Article,
     source_title: String,
+    available_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -533,9 +534,11 @@ impl Database {
                     .favorite_filter()
                     .is_none_or(|favorited| row.article.bookmarked == favorited)
             })
-            .map(|row| ArticleListItem::from_article(row.article, row.source_title))
+            .map(|row| {
+                ArticleListItem::from_article(row.article, row.source_title, row.available_at)
+            })
             .collect::<Vec<_>>();
-        items.sort_by(|left, right| right.fetched_at.cmp(&left.fetched_at));
+        items.sort_by(|left, right| right.available_at.cmp(&left.available_at));
         Ok(items)
     }
 
@@ -544,7 +547,9 @@ impl Database {
         Ok(rows
             .into_iter()
             .find(|row| row.article.id == id)
-            .map(|row| ArticleDetail::from_article(row.article, row.source_title)))
+            .map(|row| {
+                ArticleDetail::from_article(row.article, row.source_title, row.available_at)
+            }))
     }
 
     pub async fn set_favorite(&self, id: Uuid, favorited: bool) -> Result<bool, DbError> {
@@ -1162,7 +1167,8 @@ impl Database {
                         a.bookmarked,
                         COALESCE(p.status, 'pending'),
                         p.llm_summary,
-                        p.last_error
+                        p.last_error,
+                        p.completed_at
                      FROM articles a
                      INNER JOIN sources s ON s.id = a.source_id
                      LEFT JOIN article_processing p ON p.article_id = a.id",
@@ -1184,9 +1190,12 @@ impl Database {
                         llm_summary: row.get(10)?,
                         llm_error: row.get(11)?,
                     };
+                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(12)?)?;
+                    let available_at = completed_at.unwrap_or(article.fetched_at);
                     Ok(ArticleRow {
                         article,
                         source_title: row.get(2)?,
+                        available_at,
                     })
                 })
                 .map_err(sql_error)?

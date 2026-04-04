@@ -32,6 +32,7 @@ export interface ArticleListItem {
   url: string
   published_at: string | null
   fetched_at: string
+  available_at: string
   favorited: boolean
   bookmarked: boolean
   llm_status: ProcessingStatus

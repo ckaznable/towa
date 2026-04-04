@@ -77,6 +77,7 @@ pub struct ArticleListItem {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
     pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
@@ -97,6 +98,7 @@ pub struct ArticleDetail {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
     pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
@@ -190,7 +192,11 @@ pub struct RetryResult {
 }
 
 impl ArticleDetail {
-    pub fn from_article(article: Article, source_title: String) -> Self {
+    pub fn from_article(
+        article: Article,
+        source_title: String,
+        available_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             id: article.id,
             source_id: article.source_id,
@@ -200,6 +206,7 @@ impl ArticleDetail {
             url: article.url,
             published_at: article.published_at,
             fetched_at: article.fetched_at,
+            available_at,
             favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
@@ -210,7 +217,11 @@ impl ArticleDetail {
 }
 
 impl ArticleListItem {
-    pub fn from_article(article: Article, source_title: String) -> Self {
+    pub fn from_article(
+        article: Article,
+        source_title: String,
+        available_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             id: article.id,
             source_id: article.source_id,
@@ -220,6 +231,7 @@ impl ArticleListItem {
             url: article.url,
             published_at: article.published_at,
             fetched_at: article.fetched_at,
+            available_at,
             favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
