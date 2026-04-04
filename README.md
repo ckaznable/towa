@@ -23,6 +23,17 @@ Towa 是一個單機自架的 RSS / Atom reader，包含：
 - `scripts/dev.sh`: 本地同時啟動後端與前端的開發腳本
 - `openspec/changes/build-rss-reader-platform/`: OpenSpec artifacts
 
+## OpenSpec Coverage
+
+目前主 `openspec/specs/` 已涵蓋這些核心能力：
+
+- `feed-source-management`
+- `feed-fetch-scheduling`
+- `article-storage-retention`
+- `llm-agent-post-processing`
+- `reader-api-and-web-ui`
+- `article-favorites`
+
 ## Runtime Paths
 
 預設使用 XDG 目錄：
