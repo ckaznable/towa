@@ -20,6 +20,7 @@ const articles = ref<ArticleListItem[]>([])
 const articleDetail = ref<ArticleDetail | null>(null)
 const selectedSourceId = ref<string | null>(null)
 const selectedArticleId = ref<string | null>(null)
+const unreadOnly = ref(false)
 
 const currentView = computed<ViewMode>(() => {
   const view = route.query.view
@@ -48,8 +49,16 @@ const articleEmptyTitle = computed(() => {
   return 'No stories in this lane'
 })
 
-const visibleArticles = computed(() =>
+const readyArticles = computed(() =>
   articles.value.filter((article) => article.llm_status === 'done'),
+)
+
+const visibleArticles = computed(() =>
+  readyArticles.value.filter((article) => !unreadOnly.value || !isRead(article.id)),
+)
+
+const unreadCount = computed(() =>
+  readyArticles.value.filter((article) => !isRead(article.id)).length,
 )
 
 onMounted(async () => {
@@ -109,14 +118,19 @@ async function refreshArticles(preserveSelection: boolean) {
       : (visibleArticles.value[0]?.id ?? null)
 
   selectedArticleId.value = nextId
-  if (nextId) await loadArticleDetail(nextId)
+  if (nextId) await loadArticleDetail(nextId, false)
   else articleDetail.value = null
 }
 
-async function loadArticleDetail(articleId: string) {
+async function loadArticleDetail(articleId: string, markAsRead: boolean) {
   loadingState.detail = true
   try {
-    articleDetail.value = await api.getArticle(articleId)
+    articleDetail.value = markAsRead
+      ? await api.setReadState(articleId, true)
+      : await api.getArticle(articleId)
+    if (markAsRead) {
+      syncArticleReadState(articleId, true, articleDetail.value.read_at)
+    }
   } catch (error) {
     setNotice(error)
   } finally {
@@ -126,7 +140,7 @@ async function loadArticleDetail(articleId: string) {
 
 async function selectArticle(articleId: string) {
   selectedArticleId.value = articleId
-  await loadArticleDetail(articleId)
+  await loadArticleDetail(articleId, true)
 }
 
 async function toggleFavorite(articleId: string, favorited: boolean) {
@@ -159,6 +173,22 @@ function processingLabel(status: ProcessingStatus) {
     case 'failed': return 'Failed'
   }
 }
+
+function isRead(articleId: string) {
+  return articles.value.find((article) => article.id === articleId)?.read ?? false
+}
+
+function syncArticleReadState(articleId: string, read: boolean, readAt: string | null) {
+  articles.value = articles.value.map((article) =>
+    article.id === articleId
+      ? {
+          ...article,
+          read,
+          read_at: readAt,
+        }
+      : article,
+  )
+}
 </script>
 
 <template>
@@ -169,9 +199,14 @@ function processingLabel(status: ProcessingStatus) {
         <p class="kicker">{{ currentView === 'favorites' ? 'Favorites' : 'Intelligence' }}</p>
         <h2 class="serif-text">{{ currentCollectionLabel.toUpperCase() }}</h2>
       </div>
-      <button class="btn-compact" @click="refreshDashboard" :disabled="loadingState.refreshing">
-        {{ loadingState.refreshing ? '...' : 'Refresh' }}
-      </button>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button class="btn-compact" :class="{ active: unreadOnly }" @click="unreadOnly = !unreadOnly">
+          Unread {{ unreadCount }}
+        </button>
+        <button class="btn-compact" @click="refreshDashboard" :disabled="loadingState.refreshing">
+          {{ loadingState.refreshing ? '...' : 'Refresh' }}
+        </button>
+      </div>
     </header>
 
     <div class="feed-items-container">
@@ -190,6 +225,7 @@ function processingLabel(status: ProcessingStatus) {
           <span class="item-source">{{ article.source_title }}</span>
           <span>•</span>
           <span class="item-time">{{ formatTimestamp(article.available_at) }}</span>
+          <span v-if="!isRead(article.id)" class="item-unread">Unread</span>
         </div>
         <h3 class="item-title serif-text">{{ article.title }}</h3>
         <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">

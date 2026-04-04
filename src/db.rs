@@ -33,6 +33,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_article_favorites",
         include_str!("../migrations/0005_article_favorites.sql"),
     ),
+    (
+        "0006_article_read_state",
+        include_str!("../migrations/0006_article_read_state.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -284,8 +288,8 @@ impl Database {
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, bookmarked
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        id, source_id, title, summary, url, published_at, fetched_at, read_at, bookmarked
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         article.id.to_string(),
                         article.source_id.to_string(),
@@ -294,6 +298,7 @@ impl Database {
                         article.url,
                         article.published_at.map(datetime_to_string),
                         datetime_to_string(article.fetched_at),
+                        article.read_at.map(datetime_to_string),
                         bool_to_int(article.bookmarked),
                     ],
                 )
@@ -407,9 +412,13 @@ impl Database {
 
             let existing = transaction
                 .query_row(
-                    "SELECT id, bookmarked FROM articles WHERE source_id = ?1 AND dedupe_key = ?2",
+                    "SELECT id, bookmarked, read_at FROM articles WHERE source_id = ?1 AND dedupe_key = ?2",
                     params![input.source_id.to_string(), input.dedupe_key],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)? != 0,
+                        parse_datetime_opt(row.get::<_, Option<String>>(2)?)?,
+                    )),
                 )
                 .optional()
                 .map_err(sql_error)?;
@@ -422,16 +431,21 @@ impl Database {
                 )
                 .map_err(sql_error)?;
 
-            let (article_id, bookmarked, is_new) = match existing {
-                Some((id, bookmarked)) => (parse_uuid(id).map_err(sql_error)?, bookmarked, false),
-                None => (Uuid::new_v4(), false, true),
+            let (article_id, bookmarked, read_at, is_new) = match existing {
+                Some((id, bookmarked, read_at)) => (
+                    parse_uuid(id).map_err(sql_error)?,
+                    bookmarked,
+                    read_at,
+                    false,
+                ),
+                None => (Uuid::new_v4(), false, None, true),
             };
 
             transaction
                 .execute(
                     "INSERT INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, bookmarked, dedupe_key
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                        id, source_id, title, summary, url, published_at, fetched_at, read_at, bookmarked, dedupe_key
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         summary = excluded.summary,
@@ -447,6 +461,7 @@ impl Database {
                         input.url,
                         input.published_at.map(datetime_to_string),
                         datetime_to_string(input.fetched_at),
+                        read_at.map(datetime_to_string),
                         bool_to_int(bookmarked),
                         input.dedupe_key,
                     ],
@@ -508,6 +523,7 @@ impl Database {
                 url: input.url,
                 published_at: input.published_at,
                 fetched_at: input.fetched_at,
+                read_at,
                 bookmarked,
                 llm_status: processing.0,
                 llm_summary: processing.1,
@@ -560,6 +576,28 @@ impl Database {
                 .execute(
                     "UPDATE articles SET bookmarked = ?2 WHERE id = ?1",
                     params![id.to_string(), bool_to_int(favorited)],
+                )
+                .map_err(sql_error)?;
+            Ok(affected > 0)
+        })
+        .await
+    }
+
+    pub async fn set_read_state(&self, id: Uuid, read: bool) -> Result<bool, DbError> {
+        let path = self.path.clone();
+        self.run_blocking(move || {
+            let connection = open_connection(path.as_ref())?;
+            let affected = connection
+                .execute(
+                    "UPDATE articles SET read_at = ?2 WHERE id = ?1",
+                    params![
+                        id.to_string(),
+                        if read {
+                            Some(datetime_to_string(Utc::now()))
+                        } else {
+                            Option::<String>::None
+                        }
+                    ],
                 )
                 .map_err(sql_error)?;
             Ok(affected > 0)
@@ -1164,6 +1202,7 @@ impl Database {
                         a.url,
                         a.published_at,
                         a.fetched_at,
+                        a.read_at,
                         a.bookmarked,
                         COALESCE(p.status, 'pending'),
                         p.llm_summary,
@@ -1185,12 +1224,13 @@ impl Database {
                         url: row.get(5)?,
                         published_at: parse_datetime_opt(row.get::<_, Option<String>>(6)?)?,
                         fetched_at: parse_datetime(row.get::<_, String>(7)?)?,
-                        bookmarked: row.get::<_, i64>(8)? != 0,
-                        llm_status: parse_processing_status(row.get::<_, String>(9)?)?,
-                        llm_summary: row.get(10)?,
-                        llm_error: row.get(11)?,
+                        read_at: parse_datetime_opt(row.get::<_, Option<String>>(8)?)?,
+                        bookmarked: row.get::<_, i64>(9)? != 0,
+                        llm_status: parse_processing_status(row.get::<_, String>(10)?)?,
+                        llm_summary: row.get(11)?,
+                        llm_error: row.get(12)?,
                     };
-                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(12)?)?;
+                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(13)?)?;
                     let available_at = completed_at.unwrap_or(article.fetched_at);
                     Ok(ArticleRow {
                         article,

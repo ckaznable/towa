@@ -175,6 +175,11 @@ button {
   text-overflow: ellipsis;
 }
 
+.btn-compact.active {
+  background-color: var(--surface-container-highest);
+  color: var(--primary);
+}
+
 .feed-items-container {
   flex: 1;
   overflow-y: auto;
@@ -208,6 +213,18 @@ button {
 .item-source {
   color: var(--primary);
   font-weight: 600;
+}
+
+.item-unread {
+  margin-left: auto;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background-color: rgba(163, 166, 255, 0.12);
+  color: var(--primary);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .item-title {

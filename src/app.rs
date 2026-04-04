@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         AdminProcessingOverview, AgentListResponse, ArticleListResponse, ArticleQuery,
-        AssignAgentRequest, CreateSourceRequest, FavoriteRequest, HealthResponse,
+        AssignAgentRequest, CreateSourceRequest, FavoriteRequest, HealthResponse, ReadStateRequest,
         RetryBatchRequest, RetryResult, SourceListResponse, UpdateSourceRequest,
     },
     state::{ApiError, AppState},
@@ -33,6 +33,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sources/{id}/agent", put(assign_agent))
         .route("/api/articles", get(list_articles))
         .route("/api/articles/{id}", get(get_article))
+        .route("/api/articles/{id}/read", put(set_read_state))
         .route("/api/articles/{id}/favorite", put(set_favorite))
         .route("/api/articles/{id}/bookmark", put(set_bookmark))
         .route("/api/favorites", get(list_favorites))
@@ -143,6 +144,14 @@ async fn set_favorite(
     Json(request): Json<FavoriteRequest>,
 ) -> Result<Json<crate::domain::ArticleDetail>, ApiError> {
     set_favorite_inner(state, id, request).await.map(Json)
+}
+
+async fn set_read_state(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ReadStateRequest>,
+) -> Result<Json<crate::domain::ArticleDetail>, ApiError> {
+    Ok(Json(state.set_read_state(id, request.read).await?))
 }
 
 async fn list_bookmarks(
@@ -389,6 +398,7 @@ mod tests {
                 url: "https://example.com/articles/tokio-2".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
+                read_at: None,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Pending,
                 llm_summary: None,
@@ -575,6 +585,7 @@ mod tests {
                 url: "https://example.com/articles/kept".to_string(),
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
+                read_at: None,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
                 llm_summary: Some("Already summarized".to_string()),
@@ -591,6 +602,7 @@ mod tests {
                 url: "https://example.com/articles/removed".to_string(),
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
+                read_at: None,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
                 llm_summary: Some("Already summarized".to_string()),
@@ -678,6 +690,7 @@ mod tests {
                 url: "https://example.com/articles/old-favorite".to_string(),
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
+                read_at: None,
                 bookmarked: true,
                 llm_status: ProcessingStatus::Done,
                 llm_summary: Some("Still summarized".to_string()),
@@ -743,6 +756,7 @@ mod tests {
                 url: "https://example.com/articles/preserve-state".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
+                read_at: None,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
                 llm_summary: Some("Existing summary".to_string()),
@@ -769,6 +783,75 @@ mod tests {
         assert_eq!(payload.llm_status, ProcessingStatus::Done);
         assert_eq!(payload.llm_summary.as_deref(), Some("Existing summary"));
         assert_eq!(payload.llm_error.as_deref(), Some("historic error"));
+    }
+
+    #[tokio::test]
+    async fn read_state_is_persisted_via_api() {
+        let (_temp_dir, state) = test_state().await;
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Read Feed".to_string()),
+                feed_url: "https://example.com/read.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let article_id = Uuid::new_v4();
+        state
+            .insert_article(Article {
+                id: article_id,
+                source_id: source.id,
+                title: "Unread item".to_string(),
+                summary: "Will become read".to_string(),
+                url: "https://example.com/articles/read".to_string(),
+                published_at: Some(Utc::now()),
+                fetched_at: Utc::now(),
+                read_at: None,
+                bookmarked: false,
+                llm_status: ProcessingStatus::Done,
+                llm_summary: Some("Summarized".to_string()),
+                llm_error: None,
+            })
+            .await
+            .unwrap();
+
+        let app = build_router(state.clone());
+        let mark_read_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/articles/{article_id}/read"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"read":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mark_read_response.status(), StatusCode::OK);
+        let bytes = to_bytes(mark_read_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: ArticleDetail = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload.read);
+        assert!(payload.read_at.is_some());
+
+        let list_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/articles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_bytes = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list_payload: ArticleListResponse = serde_json::from_slice(&list_bytes).unwrap();
+        assert!(list_payload.items[0].read);
+        assert!(list_payload.items[0].read_at.is_some());
     }
 
     #[tokio::test]

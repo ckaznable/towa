@@ -94,6 +94,13 @@ export const api = {
     return request<ArticleDetail>(`/api/articles/${id}`)
   },
 
+  setReadState(id: string, read: boolean) {
+    return request<ArticleDetail>(`/api/articles/${id}/read`, {
+      method: 'PUT',
+      body: JSON.stringify({ read }),
+    })
+  },
+
   setFavorite(id: string, favorited: boolean) {
     return request<ArticleDetail>(`/api/articles/${id}/favorite`, {
       method: 'PUT',

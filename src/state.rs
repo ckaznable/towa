@@ -309,6 +309,19 @@ impl AppState {
         self.get_article(id).await
     }
 
+    pub async fn set_read_state(&self, id: Uuid, read: bool) -> Result<ArticleDetail, ApiError> {
+        let updated = self
+            .inner
+            .database
+            .set_read_state(id, read)
+            .await
+            .map_err(internal_error)?;
+        if !updated {
+            return Err(ApiError::NotFound(format!("article `{id}` not found")));
+        }
+        self.get_article(id).await
+    }
+
     pub async fn list_favorites(&self) -> Result<Vec<ArticleListItem>, ApiError> {
         self.list_articles(ArticleQuery {
             source_id: None,

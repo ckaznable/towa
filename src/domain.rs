@@ -51,6 +51,7 @@ pub struct Article {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub read_at: Option<DateTime<Utc>>,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
     pub llm_summary: Option<String>,
@@ -78,6 +79,8 @@ pub struct ArticleListItem {
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
     pub available_at: DateTime<Utc>,
+    pub read: bool,
+    pub read_at: Option<DateTime<Utc>>,
     pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
@@ -99,6 +102,8 @@ pub struct ArticleDetail {
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
     pub available_at: DateTime<Utc>,
+    pub read: bool,
+    pub read_at: Option<DateTime<Utc>>,
     pub favorited: bool,
     pub bookmarked: bool,
     pub llm_status: ProcessingStatus,
@@ -137,6 +142,11 @@ pub struct ArticleQuery {
 pub struct FavoriteRequest {
     pub favorited: Option<bool>,
     pub bookmarked: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadStateRequest {
+    pub read: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -207,6 +217,8 @@ impl ArticleDetail {
             published_at: article.published_at,
             fetched_at: article.fetched_at,
             available_at,
+            read: article.read_at.is_some(),
+            read_at: article.read_at,
             favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
@@ -232,6 +244,8 @@ impl ArticleListItem {
             published_at: article.published_at,
             fetched_at: article.fetched_at,
             available_at,
+            read: article.read_at.is_some(),
+            read_at: article.read_at,
             favorited: article.bookmarked,
             bookmarked: article.bookmarked,
             llm_status: article.llm_status,
