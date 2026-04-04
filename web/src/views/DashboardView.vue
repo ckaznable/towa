@@ -227,7 +227,7 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
           <span class="item-time">{{ formatTimestamp(article.available_at) }}</span>
           <span v-if="!isRead(article.id)" class="item-unread">Unread</span>
         </div>
-        <h3 class="item-title serif-text">{{ article.title }}</h3>
+        <h3 class="item-title serif-text">{{ article.llm_title ?? article.title }}</h3>
         <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">
           <span :class="['status-pill', `is-${article.llm_status}`]">
             {{ processingLabel(article.llm_status) }}
@@ -258,12 +258,12 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
       <div class="article-meta">
         {{ articleDetail.source_title }} • {{ formatTimestamp(articleDetail.available_at) }}
       </div>
-      <h1 class="article-title serif-text">{{ articleDetail.title }}</h1>
+      <h1 class="article-title serif-text">{{ articleDetail.llm_title ?? articleDetail.title }}</h1>
 
       <div class="article-body serif-text">
-        <section v-if="articleDetail.llm_summary" class="key-entities" style="background-color: var(--surface-bright);">
-          <p style="color: var(--text-primary); line-height: 1.8;">{{ articleDetail.llm_summary }}</p>
-        </section>
+        <p v-if="articleDetail.llm_summary" style="color: var(--text-primary); line-height: 1.8;">
+          {{ articleDetail.llm_summary }}
+        </p>
 
         <div v-if="articleDetail.llm_error" class="key-entities" style="background-color: rgba(255, 110, 132, 0.08); margin-top: 4rem; padding: 2rem; border-radius: 24px;">
           <p class="kicker" style="color: var(--error); margin-bottom: 1rem;">Intelligence Synthesis Error</p>

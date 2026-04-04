@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -7,13 +7,14 @@ use reqwest::header::{
     CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED,
 };
 use thiserror::Error;
-use tokio::{sync::Mutex, time};
+use tokio::time;
+use url::Url;
 use uuid::Uuid;
 
 use crate::{
     db::{FetchedArticleInput, SourceFetchUpdate},
     domain::{FeedKind, Source},
-    state::{ApiError, AppState, FeedValidator, ValidatedFeed, ValidationError},
+    state::{ApiError, AppState},
 };
 
 const MIN_FETCH_INTERVAL_MINUTES: i64 = 60;
@@ -201,6 +202,8 @@ impl Scheduler {
                 .map_err(|error| SchedulerError::Parse(error.to_string()))?;
             let entry_count = feed.entries.len();
             let mut upserted_articles = 0usize;
+            let suppress_initial_results =
+                source.last_fetch_at.is_none() && is_github_releases_source(&source);
 
             for entry in feed.entries {
                 let article = FetchedArticleInput {
@@ -211,6 +214,7 @@ impl Scheduler {
                     url: entry_url(&entry),
                     published_at: entry.published.or(entry.updated),
                     fetched_at: now,
+                    ignored: suppress_initial_results,
                 };
                 self.state
                     .upsert_fetched_article(article)
@@ -224,6 +228,7 @@ impl Scheduler {
                 source_title = %source.title,
                 entry_count,
                 upserted_articles,
+                suppressed_initial_results = suppress_initial_results,
                 next_fetch_at = %next_fetch_at,
                 etag = etag.as_deref().unwrap_or("-"),
                 last_modified = last_modified.as_deref().unwrap_or("-"),
@@ -462,6 +467,24 @@ fn dedupe_key(feed_kind: &FeedKind, entry: &Entry) -> String {
     Uuid::new_v5(&Uuid::NAMESPACE_URL, material.as_bytes()).to_string()
 }
 
+fn is_github_releases_source(source: &Source) -> bool {
+    let Ok(url) = Url::parse(&source.feed_url) else {
+        return false;
+    };
+
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host != "github.com" && host != "www.github.com" {
+        return false;
+    }
+
+    url.path()
+        .strip_suffix('/')
+        .unwrap_or(url.path())
+        .ends_with("/releases.atom")
+}
+
 fn min_fetch_interval() -> ChronoDuration {
     ChronoDuration::minutes(MIN_FETCH_INTERVAL_MINUTES)
 }
@@ -480,15 +503,16 @@ fn api_error(error: ApiError) -> SchedulerError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::VecDeque, sync::Arc};
 
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     use super::*;
     use crate::{
         config::{AppConfig, LlmAgentConfig, LlmConfig},
         domain::{Article, CreateSourceRequest, ProcessingStatus},
-        state::AppState,
+        state::{AppState, FeedValidator, ValidatedFeed, ValidationError},
     };
 
     struct StubFeedValidator;
@@ -498,7 +522,11 @@ mod tests {
         async fn validate(&self, feed_url: &str) -> Result<ValidatedFeed, ValidationError> {
             Ok(ValidatedFeed {
                 title: feed_url.to_string(),
-                feed_kind: FeedKind::Rss,
+                feed_kind: if feed_url.contains("github.com") {
+                    FeedKind::Atom
+                } else {
+                    FeedKind::Rss
+                },
             })
         }
     }
@@ -631,8 +659,10 @@ mod tests {
                 published_at: Some(now - ChronoDuration::days(31)),
                 fetched_at: now - ChronoDuration::days(31),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Pending,
+                llm_title: None,
                 llm_summary: None,
                 llm_error: None,
             })
@@ -648,8 +678,10 @@ mod tests {
                 published_at: Some(now - ChronoDuration::days(31)),
                 fetched_at: now - ChronoDuration::days(31),
                 read_at: None,
+                ignored: false,
                 bookmarked: true,
                 llm_status: ProcessingStatus::Pending,
+                llm_title: None,
                 llm_summary: None,
                 llm_error: None,
             })
@@ -665,8 +697,10 @@ mod tests {
                 published_at: Some(now - ChronoDuration::days(2)),
                 fetched_at: now - ChronoDuration::days(2),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Pending,
+                llm_title: None,
                 llm_summary: None,
                 llm_error: None,
             })
@@ -702,6 +736,80 @@ mod tests {
                 .any(|article| article.id == old_bookmarked_id)
         );
         assert!(all_articles.iter().any(|article| article.id == recent_id));
+    }
+
+    #[tokio::test]
+    async fn github_release_source_hides_initial_results_until_new_release_arrives() {
+        let (_temp_dir, state) = test_state().await;
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Hello World Releases".to_string()),
+                feed_url: "https://github.com/octocat/Hello-World".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: Some("gemini-brief".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let fetcher = Arc::new(FakeFetcher {
+            responses: Mutex::new(VecDeque::from([
+                Ok(FetchResponse {
+                    status: FetchStatus::Modified,
+                    body: Some(sample_github_atom("v1.0.0").into_bytes()),
+                    etag: Some("\"gh-v1\"".to_string()),
+                    last_modified: Some("Tue, 31 Mar 2026 15:00:00 GMT".to_string()),
+                    cache_control: Some("max-age=120".to_string()),
+                    expires: None,
+                }),
+                Ok(FetchResponse {
+                    status: FetchStatus::Modified,
+                    body: Some(sample_github_atom_pair("v1.1.0", "v1.0.0").into_bytes()),
+                    etag: Some("\"gh-v2\"".to_string()),
+                    last_modified: Some("Tue, 31 Mar 2026 16:00:00 GMT".to_string()),
+                    cache_control: Some("max-age=120".to_string()),
+                    expires: None,
+                }),
+            ])),
+        });
+        let scheduler = Scheduler::with_fetcher(state.clone(), fetcher);
+
+        assert_eq!(scheduler.run_once().await.unwrap(), 1);
+        let first_batch = state
+            .list_articles(crate::domain::ArticleQuery {
+                source_id: Some(source.id),
+                favorited: None,
+                bookmarked: None,
+            })
+            .await
+            .unwrap();
+        assert!(first_batch.is_empty());
+
+        state
+            .apply_source_fetch_update(
+                source.id,
+                SourceFetchUpdate {
+                    last_fetch_at: Some(Utc::now()),
+                    next_fetch_at: Utc::now() - ChronoDuration::minutes(1),
+                    etag: Some("\"gh-v1\"".to_string()),
+                    last_modified: Some("Tue, 31 Mar 2026 15:00:00 GMT".to_string()),
+                    validation_status: "validated".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(scheduler.run_once().await.unwrap(), 1);
+        let second_batch = state
+            .list_articles(crate::domain::ArticleQuery {
+                source_id: Some(source.id),
+                favorited: None,
+                bookmarked: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second_batch.len(), 1);
+        assert_eq!(second_batch[0].title, "Release v1.1.0");
+        assert_eq!(second_batch[0].llm_status, ProcessingStatus::Pending);
     }
 
     async fn test_state() -> (TempDir, AppState) {
@@ -747,5 +855,39 @@ mod tests {
   </channel>
 </rss>"#
             .to_string()
+    }
+
+    fn sample_github_atom(version: &str) -> String {
+        sample_github_atom_pair(version, version)
+            .replace(sample_release_entry(version, 2).as_str(), "")
+    }
+
+    fn sample_github_atom_pair(latest: &str, previous: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from octocat/Hello-World</title>
+  <id>https://github.com/octocat/Hello-World/releases</id>
+  <updated>2026-03-31T16:00:00Z</updated>
+  {}
+  {}
+</feed>"#,
+            sample_release_entry(latest, 1),
+            sample_release_entry(previous, 2)
+        )
+    }
+
+    fn sample_release_entry(version: &str, index: usize) -> String {
+        let hour = 20usize.saturating_sub(index);
+        let entry_id = version.replace('.', "-");
+        format!(
+            r#"<entry>
+  <id>tag:github.com,2008:Repository/1/{entry_id}</id>
+  <title>Release {version}</title>
+  <updated>2026-03-31T{hour:02}:00:00Z</updated>
+  <link rel="alternate" type="text/html" href="https://github.com/octocat/Hello-World/releases/tag/{version}"/>
+  <summary>Release notes for {version}</summary>
+</entry>"#
+        )
     }
 }

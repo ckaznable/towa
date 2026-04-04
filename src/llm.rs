@@ -403,20 +403,18 @@ impl BatchProvider for GeminiBatchClient {
                 if let Some(error) = item.error {
                     return Ok(BatchArticleOutput {
                         article_id,
+                        title: None,
                         summary: None,
                         error: Some(error.message),
                     });
                 }
 
-                let summary = item
-                    .response
-                    .as_ref()
-                    .map(extract_summary)
-                    .filter(|value| !value.trim().is_empty());
+                let processed = item.response.as_ref().and_then(extract_processed_article);
 
                 Ok(BatchArticleOutput {
                     article_id,
-                    summary,
+                    title: processed.as_ref().and_then(|output| output.title.clone()),
+                    summary: processed.map(|output| output.summary),
                     error: None,
                 })
             })
@@ -433,13 +431,15 @@ fn article_prompt(job: &PendingProcessingJob) -> String {
         .unwrap_or_else(|| "unknown".to_string());
 
     format!(
-        "Source: {}\nPublished At: {}\nTitle: {}\nURL: {}\nSummary:\n{}\n\nPlease produce a concise reader-facing summary.",
+        "Source: {}\nPublished At: {}\nTitle: {}\nURL: {}\nSummary:\n{}\n\nReturn strict JSON only with this exact shape:\n{{\"title\":\"processed reader-facing title\",\"summary\":\"processed reader-facing summary\"}}",
         job.source_title, published_at, job.title, job.url, job.summary
     )
 }
 
-fn extract_summary(response: &GeminiGenerateContentResponse) -> String {
-    response
+fn extract_processed_article(
+    response: &GeminiGenerateContentResponse,
+) -> Option<ProcessedArticleOutput> {
+    let raw = response
         .candidates
         .iter()
         .filter_map(|candidate| candidate.content.as_ref())
@@ -448,7 +448,48 @@ fn extract_summary(response: &GeminiGenerateContentResponse) -> String {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(parsed) = parse_structured_output(raw) {
+        return Some(parsed);
+    }
+
+    Some(ProcessedArticleOutput {
+        title: None,
+        summary: raw.to_string(),
+    })
+}
+
+fn parse_structured_output(raw: &str) -> Option<ProcessedArticleOutput> {
+    let candidate = raw
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+        .or_else(|| {
+            raw.strip_prefix("```")
+                .and_then(|value| value.strip_suffix("```"))
+                .map(str::trim)
+        })
+        .unwrap_or(raw);
+
+    let parsed = serde_json::from_str::<StructuredBatchOutput>(candidate).ok()?;
+    let summary = parsed.summary.trim();
+    if summary.is_empty() {
+        return None;
+    }
+
+    Some(ProcessedArticleOutput {
+        title: parsed
+            .title
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty()),
+        summary: summary.to_string(),
+    })
 }
 
 fn provider_error(error: reqwest::Error) -> LlmWorkerError {
@@ -607,6 +648,18 @@ struct GeminiTextPart {
 }
 
 #[derive(Debug, Deserialize)]
+struct StructuredBatchOutput {
+    title: Option<String>,
+    summary: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessedArticleOutput {
+    title: Option<String>,
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct GoogleStatus {
     message: String,
 }
@@ -660,7 +713,11 @@ mod tests {
         async fn validate(&self, feed_url: &str) -> Result<ValidatedFeed, ValidationError> {
             Ok(ValidatedFeed {
                 title: feed_url.to_string(),
-                feed_kind: FeedKind::Rss,
+                feed_kind: if feed_url.contains("github.com") {
+                    FeedKind::Atom
+                } else {
+                    FeedKind::Rss
+                },
             })
         }
     }
@@ -715,6 +772,7 @@ mod tests {
                 url: "https://example.com/articles/1".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
+                ignored: false,
             })
             .await
             .unwrap();
@@ -727,6 +785,7 @@ mod tests {
                 poll_results: Mutex::new(VecDeque::from([Ok(BatchPollResult::Completed(vec![
                     BatchArticleOutput {
                         article_id: article.id,
+                        title: None,
                         summary: Some("Summarized output".to_string()),
                         error: None,
                     },
@@ -770,6 +829,7 @@ mod tests {
                 url: "https://example.com/articles/retry".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
+                ignored: false,
             })
             .await
             .unwrap();

@@ -37,6 +37,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0006_article_read_state",
         include_str!("../migrations/0006_article_read_state.sql"),
     ),
+    (
+        "0007_llm_titles",
+        include_str!("../migrations/0007_llm_titles.sql"),
+    ),
+    (
+        "0008_article_visibility",
+        include_str!("../migrations/0008_article_visibility.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -85,6 +93,7 @@ pub struct FetchedArticleInput {
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
+    pub ignored: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +118,7 @@ pub struct ActiveBatch {
 #[derive(Debug, Clone)]
 pub struct BatchArticleOutput {
     pub article_id: Uuid,
+    pub title: Option<String>,
     pub summary: Option<String>,
     pub error: Option<String>,
 }
@@ -278,6 +288,7 @@ impl Database {
         .await
     }
 
+    #[cfg(test)]
     pub async fn insert_article(&self, article: &Article) -> Result<(), DbError> {
         let path = self.path.clone();
         let article = article.clone();
@@ -288,8 +299,8 @@ impl Database {
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, read_at, bookmarked
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        id, source_id, title, summary, url, published_at, fetched_at, read_at, ignored, bookmarked
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         article.id.to_string(),
                         article.source_id.to_string(),
@@ -299,6 +310,7 @@ impl Database {
                         article.published_at.map(datetime_to_string),
                         datetime_to_string(article.fetched_at),
                         article.read_at.map(datetime_to_string),
+                        bool_to_int(article.ignored),
                         bool_to_int(article.bookmarked),
                     ],
                 )
@@ -306,12 +318,13 @@ impl Database {
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO article_processing (
-                        article_id, agent_id, status, llm_summary, last_error, batch_name, last_batch_name, attempts, updated_at, completed_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        article_id, agent_id, status, llm_title, llm_summary, last_error, batch_name, last_batch_name, attempts, updated_at, completed_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         article.id.to_string(),
                         Option::<String>::None,
                         processing_status_to_str(article.llm_status),
+                        article.llm_title,
                         article.llm_summary,
                         article.llm_error,
                         Option::<String>::None,
@@ -412,12 +425,13 @@ impl Database {
 
             let existing = transaction
                 .query_row(
-                    "SELECT id, bookmarked, read_at FROM articles WHERE source_id = ?1 AND dedupe_key = ?2",
+                    "SELECT id, bookmarked, read_at, ignored FROM articles WHERE source_id = ?1 AND dedupe_key = ?2",
                     params![input.source_id.to_string(), input.dedupe_key],
                     |row| Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)? != 0,
                         parse_datetime_opt(row.get::<_, Option<String>>(2)?)?,
+                        row.get::<_, i64>(3)? != 0,
                     )),
                 )
                 .optional()
@@ -431,21 +445,22 @@ impl Database {
                 )
                 .map_err(sql_error)?;
 
-            let (article_id, bookmarked, read_at, is_new) = match existing {
-                Some((id, bookmarked, read_at)) => (
+            let (article_id, bookmarked, read_at, ignored, is_new) = match existing {
+                Some((id, bookmarked, read_at, ignored)) => (
                     parse_uuid(id).map_err(sql_error)?,
                     bookmarked,
                     read_at,
+                    ignored,
                     false,
                 ),
-                None => (Uuid::new_v4(), false, None, true),
+                None => (Uuid::new_v4(), false, None, input.ignored, true),
             };
 
             transaction
                 .execute(
                     "INSERT INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, read_at, bookmarked, dedupe_key
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                        id, source_id, title, summary, url, published_at, fetched_at, read_at, ignored, bookmarked, dedupe_key
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         summary = excluded.summary,
@@ -462,6 +477,7 @@ impl Database {
                         input.published_at.map(datetime_to_string),
                         datetime_to_string(input.fetched_at),
                         read_at.map(datetime_to_string),
+                        bool_to_int(ignored),
                         bool_to_int(bookmarked),
                         input.dedupe_key,
                     ],
@@ -469,20 +485,26 @@ impl Database {
                 .map_err(sql_error)?;
 
             if is_new {
-                let initial_status = if assigned_agent_id.is_some() {
+                let initial_status = if assigned_agent_id.is_some() && !input.ignored {
                     ProcessingStatus::Pending
                 } else {
                     ProcessingStatus::Done
                 };
+                let processing_agent_id = if input.ignored {
+                    None
+                } else {
+                    assigned_agent_id.clone()
+                };
                 transaction
                     .execute(
                         "INSERT OR REPLACE INTO article_processing (
-                            article_id, agent_id, status, llm_summary, last_error, batch_name, last_batch_name, attempts, updated_at, completed_at
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            article_id, agent_id, status, llm_title, llm_summary, last_error, batch_name, last_batch_name, attempts, updated_at, completed_at
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         params![
                             article_id.to_string(),
-                            assigned_agent_id.clone(),
+                            processing_agent_id,
                             processing_status_to_str(initial_status),
+                            Option::<String>::None,
                             Option::<String>::None,
                             Option::<String>::None,
                             Option::<String>::None,
@@ -503,11 +525,12 @@ impl Database {
 
             let processing = if is_new {
                 (
-                    if assigned_agent_id.is_some() {
+                    if assigned_agent_id.is_some() && !input.ignored {
                         ProcessingStatus::Pending
                     } else {
                         ProcessingStatus::Done
                     },
+                    None,
                     None,
                     None,
                 )
@@ -524,10 +547,12 @@ impl Database {
                 published_at: input.published_at,
                 fetched_at: input.fetched_at,
                 read_at,
+                ignored,
                 bookmarked,
                 llm_status: processing.0,
-                llm_summary: processing.1,
-                llm_error: processing.2,
+                llm_title: processing.1,
+                llm_summary: processing.2,
+                llm_error: processing.3,
             })
         })
         .await
@@ -540,6 +565,7 @@ impl Database {
         let rows = self.fetch_article_rows().await?;
         let mut items = rows
             .into_iter()
+            .filter(|row| !row.article.ignored)
             .filter(|row| {
                 query
                     .source_id
@@ -562,6 +588,7 @@ impl Database {
         let rows = self.fetch_article_rows().await?;
         Ok(rows
             .into_iter()
+            .filter(|row| !row.article.ignored)
             .find(|row| row.article.id == id)
             .map(|row| {
                 ArticleDetail::from_article(row.article, row.source_title, row.available_at)
@@ -745,6 +772,7 @@ impl Database {
                              attempts = ?4,
                              updated_at = ?5,
                              completed_at = ?6,
+                             llm_title = NULL,
                              llm_summary = NULL
                          WHERE article_id = ?1",
                         params![
@@ -867,6 +895,7 @@ impl Database {
                                  last_batch_name = ?6,
                                  updated_at = ?4,
                                  completed_at = ?5,
+                                 llm_title = NULL,
                                  llm_summary = NULL
                              WHERE article_id = ?1",
                             params![
@@ -888,15 +917,17 @@ impl Database {
                             .execute(
                                 "UPDATE article_processing
                                  SET status = 'done',
-                                     llm_summary = ?2,
+                                     llm_title = ?2,
+                                     llm_summary = ?3,
                                      last_error = NULL,
                                      batch_name = NULL,
-                                     last_batch_name = ?5,
-                                     updated_at = ?3,
-                                     completed_at = ?4
+                                     last_batch_name = ?6,
+                                     updated_at = ?4,
+                                     completed_at = ?5
                                  WHERE article_id = ?1",
                                 params![
                                     article_id.to_string(),
+                                    output.title,
                                     summary,
                                     now.clone(),
                                     now.clone(),
@@ -911,6 +942,7 @@ impl Database {
                             .execute(
                                 "UPDATE article_processing
                                  SET status = ?2,
+                                     llm_title = NULL,
                                      llm_summary = NULL,
                                      last_error = ?3,
                                      batch_name = NULL,
@@ -935,6 +967,7 @@ impl Database {
                             .execute(
                                 "UPDATE article_processing
                                  SET status = ?2,
+                                     llm_title = NULL,
                                      llm_summary = NULL,
                                      last_error = ?3,
                                      batch_name = NULL,
@@ -996,6 +1029,7 @@ impl Database {
                     .execute(
                         "UPDATE article_processing
                          SET status = ?2,
+                             llm_title = NULL,
                              llm_summary = NULL,
                              last_error = ?3,
                              batch_name = NULL,
@@ -1097,6 +1131,7 @@ impl Database {
                 .execute(
                     "UPDATE article_processing
                      SET status = 'pending',
+                         llm_title = NULL,
                          llm_summary = NULL,
                          last_error = NULL,
                          batch_name = NULL,
@@ -1122,6 +1157,7 @@ impl Database {
                 .execute(
                     "UPDATE article_processing
                      SET status = 'pending',
+                         llm_title = NULL,
                          llm_summary = NULL,
                          last_error = NULL,
                          batch_name = NULL,
@@ -1203,8 +1239,10 @@ impl Database {
                         a.published_at,
                         a.fetched_at,
                         a.read_at,
+                        a.ignored,
                         a.bookmarked,
                         COALESCE(p.status, 'pending'),
+                        p.llm_title,
                         p.llm_summary,
                         p.last_error,
                         p.completed_at
@@ -1225,12 +1263,14 @@ impl Database {
                         published_at: parse_datetime_opt(row.get::<_, Option<String>>(6)?)?,
                         fetched_at: parse_datetime(row.get::<_, String>(7)?)?,
                         read_at: parse_datetime_opt(row.get::<_, Option<String>>(8)?)?,
-                        bookmarked: row.get::<_, i64>(9)? != 0,
-                        llm_status: parse_processing_status(row.get::<_, String>(10)?)?,
-                        llm_summary: row.get(11)?,
-                        llm_error: row.get(12)?,
+                        ignored: row.get::<_, i64>(9)? != 0,
+                        bookmarked: row.get::<_, i64>(10)? != 0,
+                        llm_status: parse_processing_status(row.get::<_, String>(11)?)?,
+                        llm_title: row.get(12)?,
+                        llm_summary: row.get(13)?,
+                        llm_error: row.get(14)?,
                     };
-                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(13)?)?;
+                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(15)?)?;
                     let available_at = completed_at.unwrap_or(article.fetched_at);
                     Ok(ArticleRow {
                         article,
@@ -1272,11 +1312,19 @@ fn open_connection(path: &Path) -> Result<Connection, DbError> {
 fn transactionless_processing_snapshot(
     path: &Path,
     article_id: Uuid,
-) -> Result<(ProcessingStatus, Option<String>, Option<String>), DbError> {
+) -> Result<
+    (
+        ProcessingStatus,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    DbError,
+> {
     let connection = open_connection(path)?;
     let snapshot = connection
         .query_row(
-            "SELECT status, llm_summary, last_error
+            "SELECT status, llm_title, llm_summary, last_error
              FROM article_processing
              WHERE article_id = ?1",
             [article_id.to_string()],
@@ -1285,12 +1333,13 @@ fn transactionless_processing_snapshot(
                     parse_processing_status(row.get::<_, String>(0)?)?,
                     row.get(1)?,
                     row.get(2)?,
+                    row.get(3)?,
                 ))
             },
         )
         .optional()
         .map_err(sql_error)?
-        .unwrap_or((ProcessingStatus::Done, None, None));
+        .unwrap_or((ProcessingStatus::Done, None, None, None));
     Ok(snapshot)
 }
 

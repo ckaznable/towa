@@ -163,10 +163,12 @@ impl AppState {
     }
 
     pub async fn create_source(&self, request: CreateSourceRequest) -> Result<Source, ApiError> {
+        let feed_url = canonicalize_feed_url(&request.feed_url)
+            .map_err(|error| ApiError::Validation(error.to_string()))?;
         let validated = self
             .inner
             .validator
-            .validate(&request.feed_url)
+            .validate(&feed_url)
             .await
             .map_err(|error| ApiError::Validation(error.to_string()))?;
         self.ensure_agent_exists(request.assigned_agent_id.as_deref())?;
@@ -175,7 +177,7 @@ impl AppState {
         let source = Source {
             id: Uuid::new_v4(),
             title: request.title.unwrap_or(validated.title),
-            feed_url: request.feed_url,
+            feed_url,
             feed_kind: validated.feed_kind,
             enabled: request.enabled.unwrap_or(true),
             assigned_agent_id: request.assigned_agent_id,
@@ -203,6 +205,8 @@ impl AppState {
         let mut source = self.get_source(id).await?;
 
         if let Some(feed_url) = request.feed_url {
+            let feed_url = canonicalize_feed_url(&feed_url)
+                .map_err(|error| ApiError::Validation(error.to_string()))?;
             let validated = self
                 .inner
                 .validator
@@ -342,6 +346,7 @@ impl AppState {
             .map_err(internal_error)
     }
 
+    #[cfg(test)]
     pub async fn insert_article(&self, article: Article) -> Result<(), ApiError> {
         self.inner
             .database
@@ -622,6 +627,53 @@ fn infer_feed_kind(body: &str) -> Result<FeedKind, ValidationError> {
     }
 
     Err(ValidationError::UnsupportedFormat)
+}
+
+fn canonicalize_feed_url(feed_url: &str) -> Result<String, ValidationError> {
+    let parsed_url = Url::parse(feed_url).map_err(|_| ValidationError::InvalidUrl)?;
+    match parsed_url.scheme() {
+        "http" | "https" => {}
+        _ => return Err(ValidationError::InvalidUrl),
+    }
+
+    if !is_github_host(&parsed_url) {
+        return Ok(feed_url.to_string());
+    }
+
+    let path_segments = parsed_url
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if path_segments.len() >= 3 && path_segments[2] == "releases.atom" {
+        return Ok(format!(
+            "https://github.com/{}/{}{}",
+            path_segments[0],
+            path_segments[1],
+            if path_segments.len() > 2 {
+                "/releases.atom"
+            } else {
+                ""
+            }
+        ));
+    }
+
+    if path_segments.len() == 2 {
+        return Ok(format!(
+            "https://github.com/{}/{}/releases.atom",
+            path_segments[0], path_segments[1]
+        ));
+    }
+
+    Ok(feed_url.to_string())
+}
+
+fn is_github_host(url: &Url) -> bool {
+    matches!(url.host_str(), Some("github.com" | "www.github.com"))
 }
 
 fn internal_error(error: DbError) -> ApiError {

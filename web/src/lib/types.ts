@@ -28,6 +28,7 @@ export interface ArticleListItem {
   source_id: string
   source_title: string
   title: string
+  llm_title: string | null
   summary: string
   url: string
   published_at: string | null

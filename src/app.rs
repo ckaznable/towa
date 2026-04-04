@@ -254,8 +254,15 @@ mod tests {
     #[async_trait]
     impl FeedValidator for StubFeedValidator {
         async fn validate(&self, feed_url: &str) -> Result<ValidatedFeed, ValidationError> {
-            if !feed_url.contains("example.com") {
+            if !feed_url.contains("example.com") && !feed_url.contains("github.com") {
                 return Err(ValidationError::UnsupportedFormat);
+            }
+
+            if feed_url.contains("github.com") {
+                return Ok(ValidatedFeed {
+                    title: "GitHub Releases".to_string(),
+                    feed_kind: FeedKind::Atom,
+                });
             }
 
             Ok(ValidatedFeed {
@@ -342,6 +349,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normalizes_github_repo_url_to_releases_atom() {
+        let (_temp_dir, state) = test_state().await;
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sources")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"feed_url":"https://github.com/octocat/Hello-World"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: Source = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.feed_url,
+            "https://github.com/octocat/Hello-World/releases.atom"
+        );
+        assert_eq!(payload.feed_kind, FeedKind::Atom);
+    }
+
+    #[tokio::test]
     async fn assigns_agent_to_source() {
         let (_temp_dir, state) = test_state().await;
         let source = state
@@ -399,8 +435,10 @@ mod tests {
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Pending,
+                llm_title: None,
                 llm_summary: None,
                 llm_error: None,
             })
@@ -514,6 +552,7 @@ mod tests {
                 poll_results: Mutex::new(VecDeque::from([Ok(BatchPollResult::Completed(vec![
                     crate::db::BatchArticleOutput {
                         article_id: list_payload.items[0].id,
+                        title: None,
                         summary: Some("LLM summary visible through the API.".to_string()),
                         error: None,
                     },
@@ -586,8 +625,10 @@ mod tests {
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
+                llm_title: None,
                 llm_summary: Some("Already summarized".to_string()),
                 llm_error: None,
             })
@@ -603,8 +644,10 @@ mod tests {
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
+                llm_title: None,
                 llm_summary: Some("Already summarized".to_string()),
                 llm_error: None,
             })
@@ -691,8 +734,10 @@ mod tests {
                 published_at: Some(now - chrono::Duration::days(40)),
                 fetched_at: now - chrono::Duration::days(40),
                 read_at: None,
+                ignored: false,
                 bookmarked: true,
                 llm_status: ProcessingStatus::Done,
+                llm_title: None,
                 llm_summary: Some("Still summarized".to_string()),
                 llm_error: None,
             })
@@ -757,8 +802,10 @@ mod tests {
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
+                llm_title: None,
                 llm_summary: Some("Existing summary".to_string()),
                 llm_error: Some("historic error".to_string()),
             })
@@ -808,8 +855,10 @@ mod tests {
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
                 read_at: None,
+                ignored: false,
                 bookmarked: false,
                 llm_status: ProcessingStatus::Done,
+                llm_title: None,
                 llm_summary: Some("Summarized".to_string()),
                 llm_error: None,
             })
@@ -876,6 +925,7 @@ mod tests {
                 url: "https://example.com/ops/1".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
+                ignored: false,
             })
             .await
             .unwrap();
