@@ -51,6 +51,7 @@ function renderInline(value: string): string {
     .replace(/__([^_]+)__/g, '<strong>$1</strong>')
     .replace(/(^|[^\*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
     .replace(/(^|[^_])_([^_]+)_(?!_)/g, '$1<em>$2</em>')
+    .replace(/\n/g, '<br />')
 
   rendered = restoreCodeSpans(rendered, tokens)
   return rendered
@@ -160,7 +161,7 @@ export function renderMarkdown(source: string): string {
       index += 1
     }
 
-    blocks.push(`<p>${renderInline(paragraphLines.join('<br />'))}</p>`)
+    blocks.push(`<p>${renderInline(paragraphLines.join('\n'))}</p>`)
   }
 
   return blocks.join('')
