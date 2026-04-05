@@ -196,6 +196,14 @@ function formatTimestamp(value: string | null) {
   }).format(new Date(value))
 }
 
+function displayTimestamp(article: Pick<ArticleListItem, 'published_at' | 'available_at'>) {
+  return formatTimestamp(article.published_at ?? article.available_at)
+}
+
+function displayDetailTimestamp(article: Pick<ArticleDetail, 'published_at' | 'available_at'>) {
+  return formatTimestamp(article.published_at ?? article.available_at)
+}
+
 function processingLabel(status: ProcessingStatus) {
   switch (status) {
     case 'pending': return 'Queued'
@@ -262,7 +270,7 @@ const articleBodyHtml = computed(() =>
         <div class="item-meta">
           <span class="item-source">{{ article.source_title }}</span>
           <span>•</span>
-          <span class="item-time">{{ formatTimestamp(article.available_at) }}</span>
+          <span class="item-time">{{ displayTimestamp(article) }}</span>
           <span v-if="!isRead(article.id)" class="item-unread">Unread</span>
         </div>
         <h3 class="item-title serif-text">{{ article.llm_title ?? article.title }}</h3>
@@ -293,7 +301,7 @@ const articleBodyHtml = computed(() =>
 
     <div v-if="articleDetail" class="content-area">
       <div class="article-meta">
-        {{ articleDetail.source_title }} • {{ formatTimestamp(articleDetail.available_at) }}
+        {{ articleDetail.source_title }} • {{ displayDetailTimestamp(articleDetail) }}
       </div>
       <h1 class="article-title serif-text">{{ articleDetail.llm_title ?? articleDetail.title }}</h1>
 
