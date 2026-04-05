@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDashboardFilters } from '../lib/dashboardFilters'
 import { api } from '../lib/api'
+import { renderMarkdown } from '../lib/markdown'
 import type {
   AgentSummary,
   ArticleDetail,
@@ -222,6 +223,10 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
     article.id === articleId ? { ...article, read, read_at: readAt } : article,
   )
 }
+
+const articleBodyHtml = computed(() =>
+  articleDetail.value?.llm_summary ? renderMarkdown(articleDetail.value.llm_summary) : '',
+)
 </script>
 
 <template>
@@ -293,9 +298,11 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
       <h1 class="article-title serif-text">{{ articleDetail.llm_title ?? articleDetail.title }}</h1>
 
       <div class="article-body serif-text">
-        <p v-if="articleDetail.llm_summary" style="color: var(--text-primary); line-height: 1.8;">
-          {{ articleDetail.llm_summary }}
-        </p>
+        <div
+          v-if="articleDetail.llm_summary"
+          class="article-markdown"
+          v-html="articleBodyHtml"
+        />
 
         <div v-if="articleDetail.llm_error" class="key-entities" style="background-color: rgba(255, 110, 132, 0.08); margin-top: 4rem; padding: 2rem; border-radius: 24px;">
           <p class="kicker" style="color: var(--error); margin-bottom: 1rem;">Intelligence Synthesis Error</p>
