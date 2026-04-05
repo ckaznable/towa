@@ -435,15 +435,10 @@ fn entry_title(entry: &Entry) -> String {
 
 fn entry_summary(entry: &Entry) -> String {
     entry
-        .summary
+        .content
         .as_ref()
-        .map(|summary| summary.content.clone())
-        .or_else(|| {
-            entry
-                .content
-                .as_ref()
-                .and_then(|content| content.body.as_ref().cloned())
-        })
+        .and_then(|content| content.body.as_ref().cloned())
+        .or_else(|| entry.summary.as_ref().map(|summary| summary.content.clone()))
         .unwrap_or_default()
 }
 

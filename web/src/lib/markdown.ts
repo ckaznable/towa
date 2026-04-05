@@ -7,6 +7,15 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;')
 }
 
+function normalizeHtmlBreaks(value: string): string {
+  return value
+    .replaceAll('\r\n', '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
+    .replace(/<p[^>]*>/gi, '')
+    .replace(/<\/p>/gi, '\n\n')
+}
+
 function sanitizeUrl(value: string): string {
   const trimmed = value.trim()
   if (/^(https?:|mailto:)/i.test(trimmed)) {
@@ -52,7 +61,7 @@ function isHorizontalRule(line: string): boolean {
 }
 
 export function renderMarkdown(source: string): string {
-  const lines = source.replaceAll('\r\n', '\n').split('\n')
+  const lines = normalizeHtmlBreaks(source).split('\n')
   const blocks: string[] = []
   let index = 0
 
