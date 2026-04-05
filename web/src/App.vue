@@ -1,8 +1,35 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useDashboardFilters } from './lib/dashboardFilters'
 
 const router = useRouter()
 const route = useRoute()
+const { sources, streamArticles } = useDashboardFilters()
+
+const selectedSourceId = computed(() =>
+  typeof route.query.source === 'string' ? route.query.source : null,
+)
+
+const showSourceFilters = computed(
+  () =>
+    route.name === 'dashboard' &&
+    route.query.view !== 'favorites' &&
+    route.query.view !== 'bookmarks',
+)
+
+const sourceUnreadCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const article of streamArticles.value) {
+    if (article.llm_status !== 'done' || article.read) continue
+    counts.set(article.source_id, (counts.get(article.source_id) ?? 0) + 1)
+  }
+  return counts
+})
+
+const allSourcesUnreadCount = computed(() =>
+  Array.from(sourceUnreadCounts.value.values()).reduce((sum, count) => sum + count, 0),
+)
 
 function goToDashboard() {
   router.push({ name: 'dashboard' })
@@ -14,6 +41,17 @@ function goToArchive() {
 
 function goToSettings() {
   router.push({ name: 'settings' })
+}
+
+function selectSource(sourceId: string | null) {
+  router.push({
+    name: 'dashboard',
+    query: sourceId ? { source: sourceId } : {},
+  })
+}
+
+function sourceUnreadCount(sourceId: string) {
+  return sourceUnreadCounts.value.get(sourceId) ?? 0
 }
 </script>
 
@@ -36,6 +74,26 @@ function goToSettings() {
           Settings
         </button>
       </nav>
+
+      <section v-if="showSourceFilters" class="sidebar-section">
+        <p class="kicker">Filters</p>
+        <div class="sidebar-source-list">
+          <button class="sidebar-source-item" :class="{ active: selectedSourceId === null }" @click="selectSource(null)">
+            <span class="sidebar-source-title">All feeds</span>
+            <span class="sidebar-source-count">{{ allSourcesUnreadCount }}</span>
+          </button>
+          <button
+            v-for="source in sources"
+            :key="source.id"
+            class="sidebar-source-item"
+            :class="{ active: selectedSourceId === source.id }"
+            @click="selectSource(source.id)"
+          >
+            <span class="sidebar-source-title">{{ source.title }}</span>
+            <span class="sidebar-source-count">{{ sourceUnreadCount(source.id) }}</span>
+          </button>
+        </div>
+      </section>
 
       <div style="margin-top: auto;">
         <!-- Space for branding or future minimalist info -->

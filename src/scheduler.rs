@@ -347,17 +347,26 @@ fn compute_next_fetch_at(
 }
 
 fn header_next_fetch_at(response: &FetchResponse, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let min_interval = min_fetch_interval();
+    let max_interval = max_fetch_interval();
+
     if let Some(cache_control) = response.cache_control.as_deref()
         && let Some(seconds) = parse_max_age(cache_control)
     {
-        return Some(now + ChronoDuration::seconds(seconds as i64));
+        let interval = clamp_duration(
+            ChronoDuration::seconds(seconds as i64),
+            min_interval,
+            max_interval,
+        );
+        return Some(now + interval);
     }
 
     if let Some(expires) = response.expires.as_deref()
         && let Some(expires_at) = parse_http_datetime(expires)
         && expires_at > now
     {
-        return Some(expires_at);
+        let interval = clamp_duration(expires_at - now, min_interval, max_interval);
+        return Some(now + interval);
     }
 
     None
@@ -812,6 +821,78 @@ mod tests {
         assert_eq!(second_batch[0].llm_status, ProcessingStatus::Pending);
     }
 
+    #[test]
+    fn cache_control_header_is_clamped_to_min_interval() {
+        let now = Utc::now();
+        let source = sample_source();
+        let response = FetchResponse {
+            status: FetchStatus::NotModified,
+            body: None,
+            etag: Some("\"v1\"".to_string()),
+            last_modified: None,
+            cache_control: Some("max-age=0".to_string()),
+            expires: None,
+        };
+
+        let next_fetch_at = compute_next_fetch_at(&source, &response, now);
+
+        assert_eq!(next_fetch_at, now + min_fetch_interval());
+    }
+
+    #[test]
+    fn cache_control_header_is_clamped_to_max_interval() {
+        let now = Utc::now();
+        let source = sample_source();
+        let response = FetchResponse {
+            status: FetchStatus::NotModified,
+            body: None,
+            etag: Some("\"v1\"".to_string()),
+            last_modified: None,
+            cache_control: Some("max-age=86400".to_string()),
+            expires: None,
+        };
+
+        let next_fetch_at = compute_next_fetch_at(&source, &response, now);
+
+        assert_eq!(next_fetch_at, now + max_fetch_interval());
+    }
+
+    #[test]
+    fn expires_header_is_clamped_to_min_interval() {
+        let now = Utc::now();
+        let source = sample_source();
+        let response = FetchResponse {
+            status: FetchStatus::NotModified,
+            body: None,
+            etag: Some("\"v1\"".to_string()),
+            last_modified: None,
+            cache_control: None,
+            expires: Some((now + ChronoDuration::minutes(5)).to_rfc2822()),
+        };
+
+        let next_fetch_at = compute_next_fetch_at(&source, &response, now);
+
+        assert_eq!(next_fetch_at, now + min_fetch_interval());
+    }
+
+    #[test]
+    fn expires_header_is_clamped_to_max_interval() {
+        let now = Utc::now();
+        let source = sample_source();
+        let response = FetchResponse {
+            status: FetchStatus::NotModified,
+            body: None,
+            etag: Some("\"v1\"".to_string()),
+            last_modified: None,
+            cache_control: None,
+            expires: Some((now + ChronoDuration::hours(24)).to_rfc2822()),
+        };
+
+        let next_fetch_at = compute_next_fetch_at(&source, &response, now);
+
+        assert_eq!(next_fetch_at, now + max_fetch_interval());
+    }
+
     async fn test_state() -> (TempDir, AppState) {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
@@ -836,6 +917,23 @@ mod tests {
             .await
             .unwrap();
         (temp_dir, state)
+    }
+
+    fn sample_source() -> Source {
+        let now = Utc::now();
+        Source {
+            id: Uuid::new_v4(),
+            title: "Example Feed".to_string(),
+            feed_url: "https://example.com/feed.xml".to_string(),
+            feed_kind: FeedKind::Rss,
+            enabled: true,
+            assigned_agent_id: None,
+            validation_status: "validated".to_string(),
+            last_fetch_at: Some(now - ChronoDuration::hours(1)),
+            next_fetch_at: Some(now),
+            created_at: now - ChronoDuration::days(1),
+            updated_at: now - ChronoDuration::hours(1),
+        }
     }
 
     fn sample_rss() -> String {

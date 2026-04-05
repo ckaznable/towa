@@ -1,36 +1,43 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useDashboardFilters } from '../lib/dashboardFilters'
 import { api } from '../lib/api'
 import type {
   AgentSummary,
   ArticleDetail,
   ArticleListItem,
   ProcessingStatus,
-  Source,
 } from '../lib/types'
 
 const route = useRoute()
 
 type ViewMode = 'stream' | 'favorites'
 
-const sources = ref<Source[]>([])
 const agents = ref<AgentSummary[]>([])
-const articles = ref<ArticleListItem[]>([])
+const favoriteArticles = ref<ArticleListItem[]>([])
 const articleDetail = ref<ArticleDetail | null>(null)
-const selectedSourceId = ref<string | null>(null)
 const selectedArticleId = ref<string | null>(null)
 const unreadOnly = ref(false)
+const {
+  sources,
+  streamArticles,
+  refreshStreamArticles,
+  refreshDashboardFilters,
+  syncStreamArticleReadState,
+} = useDashboardFilters()
 
 const currentView = computed<ViewMode>(() => {
   const view = route.query.view
   return view === 'favorites' || view === 'bookmarks' ? 'favorites' : 'stream'
 })
+const selectedSourceId = computed(() =>
+  typeof route.query.source === 'string' ? route.query.source : null,
+)
 const notice = ref('')
 const loadingState = reactive({
   booting: true,
   refreshing: false,
-  detail: false,
 })
 
 const sourceMap = computed(() => new Map(sources.value.map((source) => [source.id, source])))
@@ -49,31 +56,42 @@ const articleEmptyTitle = computed(() => {
   return 'No stories in this lane'
 })
 
+const articles = computed(() =>
+  currentView.value === 'favorites' ? favoriteArticles.value : streamArticles.value,
+)
+
 const readyArticles = computed(() =>
   articles.value.filter((article) => article.llm_status === 'done'),
 )
 
 const visibleArticles = computed(() =>
-  readyArticles.value.filter((article) => !unreadOnly.value || !isRead(article.id)),
+  readyArticles.value.filter((article) => {
+    const matchesSource =
+      currentView.value === 'favorites' || !selectedSourceId.value
+        ? true
+        : article.source_id === selectedSourceId.value
+    return matchesSource && (!unreadOnly.value || !article.read)
+  }),
 )
 
-const unreadCount = computed(() =>
-  readyArticles.value.filter((article) => !isRead(article.id)).length,
-)
+const unreadCount = computed(() => visibleArticles.value.filter((article) => !article.read).length)
 
 onMounted(async () => {
   await bootstrap()
 })
 
-watch(() => route.query.view, () => {
-  refreshArticles(false)
-})
+watch(
+  () => [route.query.view, route.query.source],
+  () => {
+    refreshArticles(false, false)
+  },
+)
 
 async function bootstrap() {
   loadingState.booting = true
   try {
-    await Promise.all([refreshAgents(), refreshSources()])
-    await refreshArticles(false)
+    await Promise.all([refreshAgents(), refreshDashboardFilters()])
+    await refreshArticles(false, false)
   } catch (error) {
     setNotice(error)
   } finally {
@@ -85,17 +103,12 @@ async function refreshAgents() {
   agents.value = await api.listAgents()
 }
 
-async function refreshSources() {
-  const nextSources = await api.listSources()
-  sources.value = nextSources
-}
-
 async function refreshDashboard() {
   loadingState.refreshing = true
   notice.value = ''
   try {
-    await Promise.all([refreshAgents(), refreshSources()])
-    await refreshArticles(true)
+    await Promise.all([refreshAgents(), refreshDashboardFilters()])
+    await refreshArticles(true, false)
   } catch (error) {
     setNotice(error)
   } finally {
@@ -103,13 +116,16 @@ async function refreshDashboard() {
   }
 }
 
-async function refreshArticles(preserveSelection: boolean) {
-  const nextArticles =
-    currentView.value === 'favorites'
-      ? await api.listFavorites()
-      : await api.listArticles(selectedSourceId.value ?? undefined)
+async function refreshArticles(preserveSelection: boolean, refreshStream = currentView.value !== 'favorites') {
+  if (refreshStream) {
+    await refreshStreamArticles()
+  }
+  const nextFavoriteArticles =
+    currentView.value === 'favorites' ? await api.listFavorites() : favoriteArticles.value
 
-  articles.value = nextArticles
+  if (currentView.value === 'favorites') {
+    favoriteArticles.value = nextFavoriteArticles
+  }
   const nextId =
     preserveSelection &&
     selectedArticleId.value &&
@@ -123,7 +139,6 @@ async function refreshArticles(preserveSelection: boolean) {
 }
 
 async function loadArticleDetail(articleId: string, markAsRead: boolean) {
-  loadingState.detail = true
   try {
     articleDetail.value = markAsRead
       ? await api.setReadState(articleId, true)
@@ -133,14 +148,29 @@ async function loadArticleDetail(articleId: string, markAsRead: boolean) {
     }
   } catch (error) {
     setNotice(error)
-  } finally {
-    loadingState.detail = false
   }
 }
 
 async function selectArticle(articleId: string) {
   selectedArticleId.value = articleId
   await loadArticleDetail(articleId, true)
+}
+
+async function handleArticleClick(article: ArticleListItem) {
+  if (isTitleOnly(article)) {
+    openArticleInNewTab(article.url)
+    if (!article.read) {
+      try {
+        const detail = await api.setReadState(article.id, true)
+        syncArticleReadState(article.id, true, detail.read_at)
+      } catch (error) {
+        setNotice(error)
+      }
+    }
+    return
+  }
+
+  await selectArticle(article.id)
 }
 
 async function toggleFavorite(articleId: string, favorited: boolean) {
@@ -178,15 +208,18 @@ function isRead(articleId: string) {
   return articles.value.find((article) => article.id === articleId)?.read ?? false
 }
 
+function isTitleOnly(article: ArticleListItem) {
+  return article.summary.trim().length === 0
+}
+
+function openArticleInNewTab(url: string) {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 function syncArticleReadState(articleId: string, read: boolean, readAt: string | null) {
-  articles.value = articles.value.map((article) =>
-    article.id === articleId
-      ? {
-          ...article,
-          read,
-          read_at: readAt,
-        }
-      : article,
+  syncStreamArticleReadState(articleId, read, readAt)
+  favoriteArticles.value = favoriteArticles.value.map((article) =>
+    article.id === articleId ? { ...article, read, read_at: readAt } : article,
   )
 }
 </script>
@@ -219,7 +252,7 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
         :key="article.id" 
         class="feed-item" 
         :class="{ active: selectedArticleId === article.id }"
-        @click="selectArticle(article.id)"
+        @click="handleArticleClick(article)"
       >
         <div class="item-meta">
           <span class="item-source">{{ article.source_title }}</span>
@@ -228,6 +261,9 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
           <span v-if="!isRead(article.id)" class="item-unread">Unread</span>
         </div>
         <h3 class="item-title serif-text">{{ article.llm_title ?? article.title }}</h3>
+        <div class="item-secondary-row">
+          <span v-if="isTitleOnly(article)" class="item-title-only">Title only · open original</span>
+        </div>
         <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem;">
           <span :class="['status-pill', `is-${article.llm_status}`]">
             {{ processingLabel(article.llm_status) }}
@@ -250,11 +286,7 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
       </div>
     </header>
 
-    <div v-if="loadingState.detail" class="content-area" style="display: grid; place-items: center;">
-      <p class="kicker">Synthesizing intelligence...</p>
-    </div>
-
-    <div v-else-if="articleDetail" class="content-area">
+    <div v-if="articleDetail" class="content-area">
       <div class="article-meta">
         {{ articleDetail.source_title }} • {{ formatTimestamp(articleDetail.available_at) }}
       </div>
