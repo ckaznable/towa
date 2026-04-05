@@ -218,7 +218,7 @@ function isRead(articleId: string) {
 }
 
 function isTitleOnly(article: ArticleListItem) {
-  return article.summary.trim().length === 0
+  return article.content.trim().length === 0 && article.summary.trim().length === 0
 }
 
 function openArticleInNewTab(url: string) {
@@ -234,7 +234,11 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
 
 const articleBodyHtml = computed(() =>
   articleDetail.value
-    ? renderMarkdown(articleDetail.value.llm_summary ?? articleDetail.value.summary)
+    ? renderMarkdown(
+        articleDetail.value.llm_summary ??
+        articleDetail.value.content ??
+        articleDetail.value.summary,
+      )
     : '',
 )
 </script>

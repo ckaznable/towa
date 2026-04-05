@@ -45,6 +45,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0008_article_visibility",
         include_str!("../migrations/0008_article_visibility.sql"),
     ),
+    (
+        "0009_article_content",
+        include_str!("../migrations/0009_article_content.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -90,6 +94,7 @@ pub struct FetchedArticleInput {
     pub dedupe_key: String,
     pub title: String,
     pub summary: String,
+    pub content: String,
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
     pub fetched_at: DateTime<Utc>,
@@ -103,6 +108,7 @@ pub struct PendingProcessingJob {
     pub source_title: String,
     pub title: String,
     pub summary: String,
+    pub content: String,
     pub url: String,
     pub published_at: Option<DateTime<Utc>>,
 }
@@ -299,13 +305,14 @@ impl Database {
             transaction
                 .execute(
                     "INSERT OR REPLACE INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, read_at, ignored, bookmarked
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        id, source_id, title, summary, content, url, published_at, fetched_at, read_at, ignored, bookmarked
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         article.id.to_string(),
                         article.source_id.to_string(),
                         article.title,
                         article.summary,
+                        article.content,
                         article.url,
                         article.published_at.map(datetime_to_string),
                         datetime_to_string(article.fetched_at),
@@ -459,11 +466,12 @@ impl Database {
             transaction
                 .execute(
                     "INSERT INTO articles (
-                        id, source_id, title, summary, url, published_at, fetched_at, read_at, ignored, bookmarked, dedupe_key
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                        id, source_id, title, summary, content, url, published_at, fetched_at, read_at, ignored, bookmarked, dedupe_key
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         summary = excluded.summary,
+                        content = excluded.content,
                         url = excluded.url,
                         published_at = excluded.published_at,
                         fetched_at = excluded.fetched_at,
@@ -473,6 +481,7 @@ impl Database {
                         input.source_id.to_string(),
                         input.title,
                         input.summary,
+                        input.content,
                         input.url,
                         input.published_at.map(datetime_to_string),
                         datetime_to_string(input.fetched_at),
@@ -543,6 +552,7 @@ impl Database {
                 source_id: input.source_id,
                 title: input.title,
                 summary: input.summary,
+                content: input.content,
                 url: input.url,
                 published_at: input.published_at,
                 fetched_at: input.fetched_at,
@@ -667,6 +677,7 @@ impl Database {
                         s.title,
                         a.title,
                         a.summary,
+                        a.content,
                         a.url,
                         a.published_at
                      FROM article_processing p
@@ -687,8 +698,9 @@ impl Database {
                         source_title: row.get(2)?,
                         title: row.get(3)?,
                         summary: row.get(4)?,
-                        url: row.get(5)?,
-                        published_at: parse_datetime_opt(row.get::<_, Option<String>>(6)?)?,
+                        content: row.get(5)?,
+                        url: row.get(6)?,
+                        published_at: parse_datetime_opt(row.get::<_, Option<String>>(7)?)?,
                     })
                 })
                 .map_err(sql_error)?
@@ -1235,6 +1247,7 @@ impl Database {
                         s.title,
                         a.title,
                         a.summary,
+                        a.content,
                         a.url,
                         a.published_at,
                         a.fetched_at,
@@ -1259,18 +1272,19 @@ impl Database {
                         source_id: parse_uuid(row.get::<_, String>(1)?)?,
                         title: row.get(3)?,
                         summary: row.get(4)?,
-                        url: row.get(5)?,
-                        published_at: parse_datetime_opt(row.get::<_, Option<String>>(6)?)?,
-                        fetched_at: parse_datetime(row.get::<_, String>(7)?)?,
-                        read_at: parse_datetime_opt(row.get::<_, Option<String>>(8)?)?,
-                        ignored: row.get::<_, i64>(9)? != 0,
-                        bookmarked: row.get::<_, i64>(10)? != 0,
-                        llm_status: parse_processing_status(row.get::<_, String>(11)?)?,
-                        llm_title: row.get(12)?,
-                        llm_summary: row.get(13)?,
-                        llm_error: row.get(14)?,
+                        content: row.get(5)?,
+                        url: row.get(6)?,
+                        published_at: parse_datetime_opt(row.get::<_, Option<String>>(7)?)?,
+                        fetched_at: parse_datetime(row.get::<_, String>(8)?)?,
+                        read_at: parse_datetime_opt(row.get::<_, Option<String>>(9)?)?,
+                        ignored: row.get::<_, i64>(10)? != 0,
+                        bookmarked: row.get::<_, i64>(11)? != 0,
+                        llm_status: parse_processing_status(row.get::<_, String>(12)?)?,
+                        llm_title: row.get(13)?,
+                        llm_summary: row.get(14)?,
+                        llm_error: row.get(15)?,
                     };
-                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(15)?)?;
+                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(16)?)?;
                     let available_at = completed_at.unwrap_or(article.fetched_at);
                     Ok(ArticleRow {
                         article,

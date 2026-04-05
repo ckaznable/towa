@@ -30,6 +30,7 @@ export interface ArticleListItem {
   title: string
   llm_title: string | null
   summary: string
+  content: string
   url: string
   published_at: string | null
   fetched_at: string

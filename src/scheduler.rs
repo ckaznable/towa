@@ -211,6 +211,7 @@ impl Scheduler {
                     dedupe_key: dedupe_key(&source.feed_kind, &entry),
                     title: entry_title(&entry),
                     summary: entry_summary(&entry),
+                    content: entry_content(&entry),
                     url: entry_url(&entry),
                     published_at: entry.published.or(entry.updated),
                     fetched_at: now,
@@ -435,10 +436,25 @@ fn entry_title(entry: &Entry) -> String {
 
 fn entry_summary(entry: &Entry) -> String {
     entry
+        .summary
+        .as_ref()
+        .map(|summary| summary.content.clone())
+        .unwrap_or_default()
+}
+
+fn entry_content(entry: &Entry) -> String {
+    entry
         .content
         .as_ref()
         .and_then(|content| content.body.as_ref().cloned())
-        .or_else(|| entry.summary.as_ref().map(|summary| summary.content.clone()))
+        .filter(|content| !content.trim().is_empty())
+        .or_else(|| {
+            entry
+                .summary
+                .as_ref()
+                .map(|summary| summary.content.clone())
+                .filter(|summary| !summary.trim().is_empty())
+        })
         .unwrap_or_default()
 }
 
@@ -659,6 +675,7 @@ mod tests {
                 source_id: source.id,
                 title: "Expired".to_string(),
                 summary: "Should be deleted".to_string(),
+                content: "Should be deleted".to_string(),
                 url: "https://example.com/expired".to_string(),
                 published_at: Some(now - ChronoDuration::days(31)),
                 fetched_at: now - ChronoDuration::days(31),
@@ -678,6 +695,7 @@ mod tests {
                 source_id: source.id,
                 title: "Bookmarked".to_string(),
                 summary: "Should stay".to_string(),
+                content: "Should stay".to_string(),
                 url: "https://example.com/bookmarked".to_string(),
                 published_at: Some(now - ChronoDuration::days(31)),
                 fetched_at: now - ChronoDuration::days(31),
@@ -697,6 +715,7 @@ mod tests {
                 source_id: source.id,
                 title: "Recent".to_string(),
                 summary: "Should stay".to_string(),
+                content: "Should stay".to_string(),
                 url: "https://example.com/recent".to_string(),
                 published_at: Some(now - ChronoDuration::days(2)),
                 fetched_at: now - ChronoDuration::days(2),

@@ -8,6 +8,7 @@ Towa 是一個單機自架的 RSS / Atom reader，包含：
 - 來源排程抓取、HTTP cache-aware freshness 判斷
 - Gemini Batch API 文章後處理
 - 永久收藏與 30 天保留策略
+- 同時保存 feed `summary` 與 `content`
 
 ## Requirements
 
@@ -177,6 +178,7 @@ fallback interval 目前邊界是：
 - 成功結果寫入 `llm_summary`
 - 錯誤寫入 `llm_error`
 - 依 `retry_limit` 自動重試
+- 原始文章內容會同時保存 `summary` 與 `content`；若 feed 有完整 `content.body`，系統會優先保存到 `content`
 
 若未設定 `GEMINI_API_KEY`，HTTP API 與前端仍可使用，但 LLM worker 不會啟動。
 

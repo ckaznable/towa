@@ -431,8 +431,8 @@ fn article_prompt(job: &PendingProcessingJob) -> String {
         .unwrap_or_else(|| "unknown".to_string());
 
     format!(
-        "Source: {}\nPublished At: {}\nTitle: {}\nURL: {}\nSummary:\n{}\n\nReturn strict JSON only with this exact shape:\n{{\"title\":\"processed reader-facing title\",\"summary\":\"processed reader-facing summary\"}}",
-        job.source_title, published_at, job.title, job.url, job.summary
+        "Source: {}\nPublished At: {}\nTitle: {}\nURL: {}\nSummary:\n{}\n\nContent:\n{}\n\nReturn strict JSON only with this exact shape:\n{{\"title\":\"processed reader-facing title\",\"summary\":\"processed reader-facing summary\"}}",
+        job.source_title, published_at, job.title, job.url, job.summary, job.content
     )
 }
 
@@ -769,6 +769,7 @@ mod tests {
                 dedupe_key: "article-1".to_string(),
                 title: "First article".to_string(),
                 summary: "Important details".to_string(),
+                content: "Important details".to_string(),
                 url: "https://example.com/articles/1".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
@@ -826,6 +827,7 @@ mod tests {
                 dedupe_key: "article-retry".to_string(),
                 title: "Retry article".to_string(),
                 summary: "Needs retry".to_string(),
+                content: "Needs retry".to_string(),
                 url: "https://example.com/articles/retry".to_string(),
                 published_at: Some(Utc::now()),
                 fetched_at: Utc::now(),
