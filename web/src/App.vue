@@ -33,6 +33,14 @@ const allSourcesUnreadCount = computed(() =>
   Array.from(sourceUnreadCounts.value.values()).reduce((sum, count) => sum + count, 0),
 )
 
+const sortedSources = computed(() =>
+  [...sources.value].sort((left, right) => {
+    const unreadDelta = sourceUnreadCount(right.id) - sourceUnreadCount(left.id)
+    if (unreadDelta !== 0) return unreadDelta
+    return left.title.localeCompare(right.title, 'zh-TW')
+  }),
+)
+
 const unreadArticlesInSelection = computed(() =>
   streamArticles.value.filter((article) => {
     if (article.llm_status !== 'done' || article.read) return false
@@ -62,6 +70,13 @@ function selectSource(sourceId: string | null) {
 
 function sourceUnreadCount(sourceId: string) {
   return sourceUnreadCounts.value.get(sourceId) ?? 0
+}
+
+function sourceCountClass(count: number) {
+  if (count === 0) return 'is-empty'
+  if (count < 5) return 'is-low'
+  if (count < 10) return 'is-medium'
+  return 'is-high'
 }
 
 async function markVisibleArticlesRead() {
@@ -108,17 +123,21 @@ async function markVisibleArticlesRead() {
         <div class="sidebar-source-list">
           <button class="sidebar-source-item" :class="{ active: selectedSourceId === null }" @click="selectSource(null)">
             <span class="sidebar-source-title">All feeds</span>
-            <span class="sidebar-source-count">{{ allSourcesUnreadCount }}</span>
+            <span class="sidebar-source-count" :class="sourceCountClass(allSourcesUnreadCount)">
+              {{ allSourcesUnreadCount }}
+            </span>
           </button>
           <button
-            v-for="source in sources"
+            v-for="source in sortedSources"
             :key="source.id"
             class="sidebar-source-item"
             :class="{ active: selectedSourceId === source.id }"
             @click="selectSource(source.id)"
           >
             <span class="sidebar-source-title">{{ source.title }}</span>
-            <span class="sidebar-source-count">{{ sourceUnreadCount(source.id) }}</span>
+            <span class="sidebar-source-count" :class="sourceCountClass(sourceUnreadCount(source.id))">
+              {{ sourceUnreadCount(source.id) }}
+            </span>
           </button>
         </div>
         <button
