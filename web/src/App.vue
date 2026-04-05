@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useDashboardFilters } from './lib/dashboardFilters'
+import { api } from './lib/api'
 
 const router = useRouter()
 const route = useRoute()
-const { sources, streamArticles } = useDashboardFilters()
+const { sources, streamArticles, syncStreamArticleReadState } = useDashboardFilters()
+const markingAllRead = ref(false)
 
 const selectedSourceId = computed(() =>
   typeof route.query.source === 'string' ? route.query.source : null,
@@ -31,6 +33,14 @@ const allSourcesUnreadCount = computed(() =>
   Array.from(sourceUnreadCounts.value.values()).reduce((sum, count) => sum + count, 0),
 )
 
+const unreadArticlesInSelection = computed(() =>
+  streamArticles.value.filter((article) => {
+    if (article.llm_status !== 'done' || article.read) return false
+    if (!selectedSourceId.value) return true
+    return article.source_id === selectedSourceId.value
+  }),
+)
+
 function goToDashboard() {
   router.push({ name: 'dashboard' })
 }
@@ -52,6 +62,24 @@ function selectSource(sourceId: string | null) {
 
 function sourceUnreadCount(sourceId: string) {
   return sourceUnreadCounts.value.get(sourceId) ?? 0
+}
+
+async function markVisibleArticlesRead() {
+  if (markingAllRead.value || unreadArticlesInSelection.value.length === 0) return
+
+  markingAllRead.value = true
+  try {
+    const results = await Promise.allSettled(
+      unreadArticlesInSelection.value.map((article) => api.setReadState(article.id, true)),
+    )
+
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue
+      syncStreamArticleReadState(result.value.id, true, result.value.read_at)
+    }
+  } finally {
+    markingAllRead.value = false
+  }
 }
 </script>
 
@@ -93,6 +121,13 @@ function sourceUnreadCount(sourceId: string) {
             <span class="sidebar-source-count">{{ sourceUnreadCount(source.id) }}</span>
           </button>
         </div>
+        <button
+          class="sidebar-action-button"
+          :disabled="markingAllRead || unreadArticlesInSelection.length === 0"
+          @click="markVisibleArticlesRead"
+        >
+          {{ markingAllRead ? 'Marking...' : 'Mark All Read' }}
+        </button>
       </section>
 
       <div style="margin-top: auto;">
