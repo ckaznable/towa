@@ -233,7 +233,9 @@ function syncArticleReadState(articleId: string, read: boolean, readAt: string |
 }
 
 const articleBodyHtml = computed(() =>
-  articleDetail.value?.llm_summary ? renderMarkdown(articleDetail.value.llm_summary) : '',
+  articleDetail.value
+    ? renderMarkdown(articleDetail.value.llm_summary ?? articleDetail.value.summary)
+    : '',
 )
 </script>
 
@@ -307,7 +309,7 @@ const articleBodyHtml = computed(() =>
 
       <div class="article-body serif-text">
         <div
-          v-if="articleDetail.llm_summary"
+          v-if="articleDetail.llm_summary || articleDetail.summary"
           class="article-markdown"
           v-html="articleBodyHtml"
         />
