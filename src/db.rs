@@ -572,37 +572,102 @@ impl Database {
         &self,
         query: ArticleQuery,
     ) -> Result<Vec<ArticleListItem>, DbError> {
-        let rows = self.fetch_article_rows().await?;
-        let mut items = rows
-            .into_iter()
-            .filter(|row| !row.article.ignored)
-            .filter(|row| {
-                query
-                    .source_id
-                    .is_none_or(|source_id| row.article.source_id == source_id)
-            })
-            .filter(|row| {
-                query
-                    .favorite_filter()
-                    .is_none_or(|favorited| row.article.bookmarked == favorited)
-            })
-            .map(|row| {
-                ArticleListItem::from_article(row.article, row.source_title, row.available_at)
-            })
-            .collect::<Vec<_>>();
-        items.sort_by(|left, right| right.available_at.cmp(&left.available_at));
-        Ok(items)
+        let path = self.path.clone();
+        self.run_blocking(move || {
+            let connection = open_connection(path.as_ref())?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT
+                        a.id,
+                        a.source_id,
+                        s.title,
+                        a.title,
+                        a.summary,
+                        a.content,
+                        a.url,
+                        a.published_at,
+                        a.fetched_at,
+                        a.read_at,
+                        a.ignored,
+                        a.bookmarked,
+                        COALESCE(p.status, 'pending'),
+                        p.llm_title,
+                        p.llm_summary,
+                        p.last_error,
+                        p.completed_at
+                     FROM articles a
+                     INNER JOIN sources s ON s.id = a.source_id
+                     LEFT JOIN article_processing p ON p.article_id = a.id
+                     WHERE a.ignored = 0
+                       AND (?1 IS NULL OR a.source_id = ?1)
+                       AND (?2 IS NULL OR a.bookmarked = ?2)
+                     ORDER BY COALESCE(p.completed_at, a.fetched_at) DESC",
+                )
+                .map_err(sql_error)?;
+
+            let source_id = query.source_id.map(|id| id.to_string());
+            let favorite_filter = query.favorite_filter().map(bool_to_int);
+            let items = statement
+                .query_map(params![source_id, favorite_filter], |row| {
+                    let article_row = read_article_row(row)?;
+                    Ok(ArticleListItem::from_article(
+                        article_row.article,
+                        article_row.source_title,
+                        article_row.available_at,
+                    ))
+                })
+                .map_err(sql_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error)?;
+
+            Ok(items)
+        })
+        .await
     }
 
     pub async fn get_article(&self, id: Uuid) -> Result<Option<ArticleDetail>, DbError> {
-        let rows = self.fetch_article_rows().await?;
-        Ok(rows
-            .into_iter()
-            .filter(|row| !row.article.ignored)
-            .find(|row| row.article.id == id)
-            .map(|row| {
-                ArticleDetail::from_article(row.article, row.source_title, row.available_at)
-            }))
+        let path = self.path.clone();
+        self.run_blocking(move || {
+            let connection = open_connection(path.as_ref())?;
+            connection
+                .query_row(
+                    "SELECT
+                        a.id,
+                        a.source_id,
+                        s.title,
+                        a.title,
+                        a.summary,
+                        a.content,
+                        a.url,
+                        a.published_at,
+                        a.fetched_at,
+                        a.read_at,
+                        a.ignored,
+                        a.bookmarked,
+                        COALESCE(p.status, 'pending'),
+                        p.llm_title,
+                        p.llm_summary,
+                        p.last_error,
+                        p.completed_at
+                     FROM articles a
+                     INNER JOIN sources s ON s.id = a.source_id
+                     LEFT JOIN article_processing p ON p.article_id = a.id
+                     WHERE a.id = ?1
+                       AND a.ignored = 0",
+                    [id.to_string()],
+                    |row| {
+                        let article_row = read_article_row(row)?;
+                        Ok(ArticleDetail::from_article(
+                            article_row.article,
+                            article_row.source_title,
+                            article_row.available_at,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sql_error)
+        })
+        .await
     }
 
     pub async fn set_favorite(&self, id: Uuid, favorited: bool) -> Result<bool, DbError> {
@@ -1268,72 +1333,6 @@ impl Database {
         .await
     }
 
-    async fn fetch_article_rows(&self) -> Result<Vec<ArticleRow>, DbError> {
-        let path = self.path.clone();
-        self.run_blocking(move || {
-            let connection = open_connection(path.as_ref())?;
-            let mut statement = connection
-                .prepare(
-                    "SELECT
-                        a.id,
-                        a.source_id,
-                        s.title,
-                        a.title,
-                        a.summary,
-                        a.content,
-                        a.url,
-                        a.published_at,
-                        a.fetched_at,
-                        a.read_at,
-                        a.ignored,
-                        a.bookmarked,
-                        COALESCE(p.status, 'pending'),
-                        p.llm_title,
-                        p.llm_summary,
-                        p.last_error,
-                        p.completed_at
-                     FROM articles a
-                     INNER JOIN sources s ON s.id = a.source_id
-                     LEFT JOIN article_processing p ON p.article_id = a.id",
-                )
-                .map_err(sql_error)?;
-
-            let rows = statement
-                .query_map([], |row| {
-                    let article = Article {
-                        id: parse_uuid(row.get::<_, String>(0)?)?,
-                        source_id: parse_uuid(row.get::<_, String>(1)?)?,
-                        title: row.get(3)?,
-                        summary: row.get(4)?,
-                        content: row.get(5)?,
-                        url: row.get(6)?,
-                        published_at: parse_datetime_opt(row.get::<_, Option<String>>(7)?)?,
-                        fetched_at: parse_datetime(row.get::<_, String>(8)?)?,
-                        read_at: parse_datetime_opt(row.get::<_, Option<String>>(9)?)?,
-                        ignored: row.get::<_, i64>(10)? != 0,
-                        bookmarked: row.get::<_, i64>(11)? != 0,
-                        llm_status: parse_processing_status(row.get::<_, String>(12)?)?,
-                        llm_title: row.get(13)?,
-                        llm_summary: row.get(14)?,
-                        llm_error: row.get(15)?,
-                    };
-                    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(16)?)?;
-                    let available_at = completed_at.unwrap_or(article.fetched_at);
-                    Ok(ArticleRow {
-                        article,
-                        source_title: row.get(2)?,
-                        available_at,
-                    })
-                })
-                .map_err(sql_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sql_error)?;
-
-            Ok(rows)
-        })
-        .await
-    }
-
     async fn run_blocking<T, F>(&self, job: F) -> Result<T, DbError>
     where
         T: Send + 'static,
@@ -1403,6 +1402,34 @@ fn read_source(row: &rusqlite::Row<'_>) -> rusqlite::Result<Source> {
         next_fetch_at: parse_datetime_opt(row.get::<_, Option<String>>(8)?)?,
         created_at: parse_datetime(row.get::<_, String>(9)?)?,
         updated_at: parse_datetime(row.get::<_, String>(10)?)?,
+    })
+}
+
+fn read_article_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArticleRow> {
+    let article = Article {
+        id: parse_uuid(row.get::<_, String>(0)?)?,
+        source_id: parse_uuid(row.get::<_, String>(1)?)?,
+        title: row.get(3)?,
+        summary: row.get(4)?,
+        content: row.get(5)?,
+        url: row.get(6)?,
+        published_at: parse_datetime_opt(row.get::<_, Option<String>>(7)?)?,
+        fetched_at: parse_datetime(row.get::<_, String>(8)?)?,
+        read_at: parse_datetime_opt(row.get::<_, Option<String>>(9)?)?,
+        ignored: row.get::<_, i64>(10)? != 0,
+        bookmarked: row.get::<_, i64>(11)? != 0,
+        llm_status: parse_processing_status(row.get::<_, String>(12)?)?,
+        llm_title: row.get(13)?,
+        llm_summary: row.get(14)?,
+        llm_error: row.get(15)?,
+    };
+    let completed_at = parse_datetime_opt(row.get::<_, Option<String>>(16)?)?;
+    let available_at = completed_at.unwrap_or(article.fetched_at);
+
+    Ok(ArticleRow {
+        article,
+        source_title: row.get(2)?,
+        available_at,
     })
 }
 
