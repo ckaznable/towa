@@ -21,8 +21,9 @@ use crate::{
     },
     domain::{
         ActiveBatchSummary, AdminProcessingOverview, AgentSummary, Article, ArticleDetail,
-        ArticleListItem, ArticleQuery, AssignAgentRequest, CreateSourceRequest, FailedJobSummary,
-        FeedKind, PendingJobSummary, Source, UpdateSourceRequest,
+        ArticleListItem, ArticleQuery, AssignAgentRequest, BulkReadStateResponse,
+        CreateSourceRequest, FailedJobSummary, FeedKind, PendingJobSummary, Source,
+        UpdateSourceRequest,
     },
 };
 
@@ -324,6 +325,21 @@ impl AppState {
             return Err(ApiError::NotFound(format!("article `{id}` not found")));
         }
         self.get_article(id).await
+    }
+
+    pub async fn set_read_state_bulk(
+        &self,
+        article_ids: Vec<Uuid>,
+        read: bool,
+    ) -> Result<BulkReadStateResponse, ApiError> {
+        let (updated, read_at) = self
+            .inner
+            .database
+            .set_read_state_bulk(&article_ids, read)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(BulkReadStateResponse { updated, read_at })
     }
 
     pub async fn list_favorites(&self) -> Result<Vec<ArticleListItem>, ApiError> {

@@ -15,8 +15,9 @@ use uuid::Uuid;
 use crate::{
     domain::{
         AdminProcessingOverview, AgentListResponse, ArticleListResponse, ArticleQuery,
-        AssignAgentRequest, CreateSourceRequest, FavoriteRequest, HealthResponse, ReadStateRequest,
-        RetryBatchRequest, RetryResult, SourceListResponse, UpdateSourceRequest,
+        AssignAgentRequest, BulkReadStateRequest, BulkReadStateResponse, CreateSourceRequest,
+        FavoriteRequest, HealthResponse, ReadStateRequest, RetryBatchRequest, RetryResult,
+        SourceListResponse, UpdateSourceRequest,
     },
     state::{ApiError, AppState},
 };
@@ -32,6 +33,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/sources/{id}/agent", put(assign_agent))
         .route("/api/articles", get(list_articles))
+        .route("/api/articles/read", put(set_bulk_read_state))
         .route("/api/articles/{id}", get(get_article))
         .route("/api/articles/{id}/read", put(set_read_state))
         .route("/api/articles/{id}/favorite", put(set_favorite))
@@ -154,6 +156,17 @@ async fn set_read_state(
     Ok(Json(state.set_read_state(id, request.read).await?))
 }
 
+async fn set_bulk_read_state(
+    State(state): State<AppState>,
+    Json(request): Json<BulkReadStateRequest>,
+) -> Result<Json<BulkReadStateResponse>, ApiError> {
+    Ok(Json(
+        state
+            .set_read_state_bulk(request.article_ids, request.read)
+            .await?,
+    ))
+}
+
 async fn list_bookmarks(
     State(state): State<AppState>,
 ) -> Result<Json<ArticleListResponse>, ApiError> {
@@ -230,8 +243,8 @@ mod tests {
         db::FetchedArticleInput,
         domain::{
             AdminProcessingOverview, Article, ArticleDetail, ArticleListResponse,
-            CreateSourceRequest, FeedKind, ProcessingStatus, RetryResult, Source,
-            SourceListResponse,
+            BulkReadStateResponse, CreateSourceRequest, FeedKind, ProcessingStatus, RetryResult,
+            Source, SourceListResponse,
         },
         llm::{BatchPollResult, BatchProvider, LlmWorker, LlmWorkerError},
         scheduler::{
@@ -907,6 +920,83 @@ mod tests {
         let list_payload: ArticleListResponse = serde_json::from_slice(&list_bytes).unwrap();
         assert!(list_payload.items[0].read);
         assert!(list_payload.items[0].read_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn bulk_read_state_updates_articles_in_single_request() {
+        let (_temp_dir, state) = test_state().await;
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Bulk Read Feed".to_string()),
+                feed_url: "https://example.com/bulk-read.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+
+        for (id, title) in [(first_id, "First unread"), (second_id, "Second unread")] {
+            state
+                .insert_article(Article {
+                    id,
+                    source_id: source.id,
+                    title: title.to_string(),
+                    summary: title.to_string(),
+                    content: title.to_string(),
+                    url: format!("https://example.com/articles/{id}"),
+                    published_at: Some(Utc::now()),
+                    fetched_at: Utc::now(),
+                    read_at: None,
+                    ignored: false,
+                    bookmarked: false,
+                    llm_status: ProcessingStatus::Done,
+                    llm_title: None,
+                    llm_summary: Some("Summarized".to_string()),
+                    llm_error: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let app = build_router(state.clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/articles/read")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"article_ids":["{first_id}","{second_id}"],"read":true}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: BulkReadStateResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload.updated, 2);
+        assert!(payload.read_at.is_some());
+
+        let list_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/articles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_bytes = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list_payload: ArticleListResponse = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_payload.items.len(), 2);
+        assert!(list_payload.items.iter().all(|item| item.read));
+        assert!(list_payload.items.iter().all(|item| item.read_at.is_some()));
     }
 
     #[tokio::test]

@@ -101,6 +101,13 @@ export const api = {
     })
   },
 
+  setReadStates(articleIds: string[], read: boolean) {
+    return request<{ updated: number; read_at: string | null }>('/api/articles/read', {
+      method: 'PUT',
+      body: JSON.stringify({ article_ids: articleIds, read }),
+    })
+  },
+
   setFavorite(id: string, favorited: boolean) {
     return request<ArticleDetail>(`/api/articles/${id}/favorite`, {
       method: 'PUT',

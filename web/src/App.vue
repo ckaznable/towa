@@ -84,13 +84,11 @@ async function markVisibleArticlesRead() {
 
   markingAllRead.value = true
   try {
-    const results = await Promise.allSettled(
-      unreadArticlesInSelection.value.map((article) => api.setReadState(article.id, true)),
-    )
+    const articleIds = unreadArticlesInSelection.value.map((article) => article.id)
+    const result = await api.setReadStates(articleIds, true)
 
-    for (const result of results) {
-      if (result.status !== 'fulfilled') continue
-      syncStreamArticleReadState(result.value.id, true, result.value.read_at)
+    for (const articleId of articleIds) {
+      syncStreamArticleReadState(articleId, true, result.read_at)
     }
   } finally {
     markingAllRead.value = false

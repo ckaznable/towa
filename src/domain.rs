@@ -156,6 +156,18 @@ pub struct ReadStateRequest {
     pub read: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BulkReadStateRequest {
+    pub article_ids: Vec<Uuid>,
+    pub read: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkReadStateResponse {
+    pub updated: usize,
+    pub read_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,

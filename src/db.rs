@@ -642,6 +642,39 @@ impl Database {
         .await
     }
 
+    pub async fn set_read_state_bulk(
+        &self,
+        article_ids: &[Uuid],
+        read: bool,
+    ) -> Result<(usize, Option<DateTime<Utc>>), DbError> {
+        if article_ids.is_empty() {
+            return Ok((0, None));
+        }
+
+        let path = self.path.clone();
+        let article_ids = article_ids.to_vec();
+        self.run_blocking(move || {
+            let mut connection = open_connection(path.as_ref())?;
+            let transaction = connection.transaction().map_err(sql_error)?;
+            let read_at = read.then(Utc::now);
+            let read_at_value = read_at.map(datetime_to_string);
+            let mut updated = 0usize;
+
+            for article_id in article_ids {
+                updated += transaction
+                    .execute(
+                        "UPDATE articles SET read_at = ?2 WHERE id = ?1",
+                        params![article_id.to_string(), read_at_value.clone()],
+                    )
+                    .map_err(sql_error)?;
+            }
+
+            transaction.commit().map_err(sql_error)?;
+            Ok((updated, read_at))
+        })
+        .await
+    }
+
     pub async fn delete_expired_non_favorited_articles(
         &self,
         cutoff: DateTime<Utc>,
