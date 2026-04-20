@@ -89,9 +89,15 @@ impl Scheduler {
 
         loop {
             interval.tick().await;
-            let processed = self.run_once().await?;
-            if processed > 0 {
-                tracing::info!("scheduler processed {processed} source(s)");
+            match self.run_once().await {
+                Ok(processed) => {
+                    if processed > 0 {
+                        tracing::info!("scheduler processed {processed} source(s)");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "scheduler tick failed; continuing");
+                }
             }
         }
     }
@@ -108,8 +114,13 @@ impl Scheduler {
 
         let mut processed = 0usize;
         for source in due_sources {
-            self.process_source(source, now).await?;
-            processed += 1;
+            match self.process_source(source, now).await {
+                Ok(true) => processed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(error = %error, "scheduler source failed before reschedule");
+                }
+            }
         }
 
         if deleted > 0 {
@@ -126,15 +137,20 @@ impl Scheduler {
         &self,
         source: Source,
         now: DateTime<Utc>,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<bool, SchedulerError> {
         let fetch_state = self
             .state
             .get_source_fetch_state(source.id)
             .await
             .map_err(api_error)?;
+        let source_id = source.id;
+        let source_title = source.title.clone();
+        let source_last_fetch_at = source.last_fetch_at;
+        let etag = fetch_state.etag.clone();
+        let last_modified = fetch_state.last_modified.clone();
         tracing::info!(
-            source_id = %source.id,
-            source_title = %source.title,
+            source_id = %source_id,
+            source_title = %source_title,
             feed_url = %source.feed_url,
             feed_kind = ?source.feed_kind,
             has_etag = fetch_state.etag.is_some(),
@@ -151,33 +167,59 @@ impl Scheduler {
             .await;
 
         match response {
-            Ok(response) => {
-                self.handle_fetch_response(source, fetch_state, response, now)
-                    .await
-            }
+            Ok(response) => match self
+                .handle_fetch_response(source, fetch_state, response, now)
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(error) => {
+                    let retry_at = now + min_fetch_interval();
+                    self.state
+                        .apply_source_fetch_update(
+                            source_id,
+                            SourceFetchUpdate {
+                                last_fetch_at: source_last_fetch_at,
+                                next_fetch_at: retry_at,
+                                etag,
+                                last_modified,
+                                validation_status: fetch_error_status(&error).to_string(),
+                            },
+                        )
+                        .await
+                        .map_err(api_error)?;
+                    tracing::warn!(
+                        source_id = %source_id,
+                        source_title = %source_title,
+                        retry_at = %retry_at,
+                        error = %error,
+                        "scheduler source processing failed; source rescheduled"
+                    );
+                    Ok(false)
+                }
+            },
             Err(error) => {
                 let retry_at = now + min_fetch_interval();
                 self.state
                     .apply_source_fetch_update(
-                        source.id,
+                        source_id,
                         SourceFetchUpdate {
-                            last_fetch_at: source.last_fetch_at,
+                            last_fetch_at: source_last_fetch_at,
                             next_fetch_at: retry_at,
-                            etag: fetch_state.etag,
-                            last_modified: fetch_state.last_modified,
+                            etag,
+                            last_modified,
                             validation_status: "fetch_error".to_string(),
                         },
                     )
                     .await
                     .map_err(api_error)?;
                 tracing::warn!(
-                    source_id = %source.id,
-                    source_title = %source.title,
+                    source_id = %source_id,
+                    source_title = %source_title,
                     retry_at = %retry_at,
                     error = %error,
                     "scheduler fetch failed; source rescheduled"
                 );
-                Err(error)
+                Ok(false)
             }
         }
     }
@@ -521,6 +563,14 @@ fn api_error(error: ApiError) -> SchedulerError {
     SchedulerError::Api(error.to_string())
 }
 
+fn fetch_error_status(error: &SchedulerError) -> &'static str {
+    match error {
+        SchedulerError::Fetch(_) => "fetch_error",
+        SchedulerError::Parse(_) => "parse_error",
+        SchedulerError::Api(_) => "internal_error",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, sync::Arc};
@@ -833,6 +883,62 @@ mod tests {
         assert_eq!(second_batch.len(), 1);
         assert_eq!(second_batch[0].title, "Release v1.1.0");
         assert_eq!(second_batch[0].llm_status, ProcessingStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn scheduler_continues_after_source_fetch_failure() {
+        let (_temp_dir, state) = test_state().await;
+        let broken_source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Broken Feed".to_string()),
+                feed_url: "https://example.com/broken.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let healthy_source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Healthy Feed".to_string()),
+                feed_url: "https://example.com/healthy.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+
+        let fetcher = Arc::new(FakeFetcher {
+            responses: Mutex::new(VecDeque::from([
+                Err(SchedulerError::Fetch(
+                    "temporary upstream failure".to_string(),
+                )),
+                Ok(FetchResponse {
+                    status: FetchStatus::Modified,
+                    body: Some(sample_rss().into_bytes()),
+                    etag: Some("\"ok\"".to_string()),
+                    last_modified: Some("Tue, 31 Mar 2026 15:00:00 GMT".to_string()),
+                    cache_control: Some("max-age=120".to_string()),
+                    expires: None,
+                }),
+            ])),
+        });
+        let scheduler = Scheduler::with_fetcher(state.clone(), fetcher);
+
+        assert_eq!(scheduler.run_once().await.unwrap(), 1);
+
+        let broken_state = state.get_source(broken_source.id).await.unwrap();
+        assert_eq!(broken_state.validation_status, "fetch_error");
+        assert!(broken_state.next_fetch_at.is_some());
+
+        let healthy_articles = state
+            .list_articles(crate::domain::ArticleQuery {
+                source_id: Some(healthy_source.id),
+                favorited: None,
+                bookmarked: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(healthy_articles.len(), 1);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use chrono::{DateTime, Utc};
@@ -1346,6 +1347,9 @@ impl Database {
 
 fn open_connection(path: &Path) -> Result<Connection, DbError> {
     let connection = Connection::open(path).map_err(sql_error)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(sql_error)?;
     connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(sql_error)?;
