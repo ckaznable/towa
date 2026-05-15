@@ -6,7 +6,13 @@ import { api } from './lib/api'
 
 const router = useRouter()
 const route = useRoute()
-const { sources, streamArticles, syncStreamArticleReadState } = useDashboardFilters()
+const {
+  sources,
+  unreadCounts,
+  unreadTotal,
+  refreshUnreadCounts,
+  invalidateStreamArticles,
+} = useDashboardFilters()
 const markingAllRead = ref(false)
 
 const selectedSourceId = computed(() =>
@@ -20,18 +26,8 @@ const showSourceFilters = computed(
     route.query.view !== 'bookmarks',
 )
 
-const sourceUnreadCounts = computed(() => {
-  const counts = new Map<string, number>()
-  for (const article of streamArticles.value) {
-    if (article.llm_status !== 'done' || article.read) continue
-    counts.set(article.source_id, (counts.get(article.source_id) ?? 0) + 1)
-  }
-  return counts
-})
-
-const allSourcesUnreadCount = computed(() =>
-  Array.from(sourceUnreadCounts.value.values()).reduce((sum, count) => sum + count, 0),
-)
+const sourceUnreadCounts = computed(() => unreadCounts.value)
+const allSourcesUnreadCount = computed(() => unreadTotal.value)
 
 const sortedSources = computed(() =>
   [...sources.value].sort((left, right) => {
@@ -41,12 +37,8 @@ const sortedSources = computed(() =>
   }),
 )
 
-const unreadArticlesInSelection = computed(() =>
-  streamArticles.value.filter((article) => {
-    if (article.llm_status !== 'done' || article.read) return false
-    if (!selectedSourceId.value) return true
-    return article.source_id === selectedSourceId.value
-  }),
+const unreadArticlesInSelectionCount = computed(() =>
+  selectedSourceId.value ? sourceUnreadCount(selectedSourceId.value) : allSourcesUnreadCount.value,
 )
 
 function goToDashboard() {
@@ -69,7 +61,7 @@ function selectSource(sourceId: string | null) {
 }
 
 function sourceUnreadCount(sourceId: string) {
-  return sourceUnreadCounts.value.get(sourceId) ?? 0
+  return sourceUnreadCounts.value[sourceId] ?? 0
 }
 
 function sourceCountClass(count: number) {
@@ -80,16 +72,13 @@ function sourceCountClass(count: number) {
 }
 
 async function markVisibleArticlesRead() {
-  if (markingAllRead.value || unreadArticlesInSelection.value.length === 0) return
+  if (markingAllRead.value || unreadArticlesInSelectionCount.value === 0) return
 
   markingAllRead.value = true
   try {
-    const articleIds = unreadArticlesInSelection.value.map((article) => article.id)
-    const result = await api.setReadStates(articleIds, true)
-
-    for (const articleId of articleIds) {
-      syncStreamArticleReadState(articleId, true, result.read_at)
-    }
+    await api.markSelectionRead(selectedSourceId.value)
+    await refreshUnreadCounts()
+    invalidateStreamArticles()
   } finally {
     markingAllRead.value = false
   }
@@ -140,7 +129,7 @@ async function markVisibleArticlesRead() {
         </div>
         <button
           class="sidebar-action-button"
-          :disabled="markingAllRead || unreadArticlesInSelection.length === 0"
+          :disabled="markingAllRead || unreadArticlesInSelectionCount === 0"
           @click="markVisibleArticlesRead"
         >
           {{ markingAllRead ? 'Marking...' : 'Mark All Read' }}

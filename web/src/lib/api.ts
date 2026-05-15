@@ -1,7 +1,10 @@
 import type {
   AgentListResponse,
   ArticleDetail,
+  ArticleListParams,
   ArticleListResponse,
+  ArticleUnreadCountsResponse,
+  BulkReadStateResponse,
   CreateSourcePayload,
   Source,
   SourceListResponse,
@@ -79,15 +82,33 @@ export const api = {
     })
   },
 
-  async listArticles(sourceId?: string) {
-    const query = sourceId ? `?source_id=${encodeURIComponent(sourceId)}` : ''
-    const payload = await request<ArticleListResponse>(`/api/articles${query}`)
-    return payload.items
+  async listArticles(params: ArticleListParams = {}) {
+    const query = new URLSearchParams()
+    if (params.sourceId) query.set('source_id', params.sourceId)
+    if (params.favorited !== undefined) query.set('favorited', String(params.favorited))
+    if (params.bookmarked !== undefined) query.set('bookmarked', String(params.bookmarked))
+    if (params.read !== undefined) query.set('read', String(params.read))
+    if (params.llmStatus) query.set('llm_status', params.llmStatus)
+    if (params.limit !== undefined) query.set('limit', String(params.limit))
+    if (params.offset !== undefined) query.set('offset', String(params.offset))
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return request<ArticleListResponse>(`/api/articles${suffix}`)
   },
 
-  async listFavorites() {
-    const payload = await request<ArticleListResponse>('/api/favorites')
-    return payload.items
+  listFavorites(params: ArticleListParams = {}) {
+    const query = new URLSearchParams()
+    if (params.read !== undefined) query.set('read', String(params.read))
+    if (params.llmStatus) query.set('llm_status', params.llmStatus)
+    if (params.limit !== undefined) query.set('limit', String(params.limit))
+    if (params.offset !== undefined) query.set('offset', String(params.offset))
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return request<ArticleListResponse>(`/api/favorites${suffix}`)
+  },
+
+  listUnreadCounts() {
+    return request<ArticleUnreadCountsResponse>('/api/articles/unread-counts')
   },
 
   getArticle(id: string) {
@@ -102,9 +123,16 @@ export const api = {
   },
 
   setReadStates(articleIds: string[], read: boolean) {
-    return request<{ updated: number; read_at: string | null }>('/api/articles/read', {
+    return request<BulkReadStateResponse>('/api/articles/read', {
       method: 'PUT',
       body: JSON.stringify({ article_ids: articleIds, read }),
+    })
+  },
+
+  markSelectionRead(sourceId?: string | null) {
+    return request<BulkReadStateResponse>('/api/articles/read-selection', {
+      method: 'PUT',
+      body: JSON.stringify({ source_id: sourceId ?? null }),
     })
   },
 

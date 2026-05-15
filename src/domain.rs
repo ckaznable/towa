@@ -94,6 +94,10 @@ pub struct ArticleListItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArticleListResponse {
     pub items: Vec<ArticleListItem>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +147,10 @@ pub struct ArticleQuery {
     pub source_id: Option<Uuid>,
     pub favorited: Option<bool>,
     pub bookmarked: Option<bool>,
+    pub read: Option<bool>,
+    pub llm_status: Option<ProcessingStatus>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +170,11 @@ pub struct BulkReadStateRequest {
     pub read: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReadSelectionRequest {
+    pub source_id: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BulkReadStateResponse {
     pub updated: usize,
@@ -172,6 +185,18 @@ pub struct BulkReadStateResponse {
 pub struct HealthResponse {
     pub status: &'static str,
     pub service: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceUnreadCount {
+    pub source_id: Uuid,
+    pub unread: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArticleUnreadCountsResponse {
+    pub items: Vec<SourceUnreadCount>,
+    pub total_unread: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,8 +302,25 @@ impl ArticleListItem {
 }
 
 impl ArticleQuery {
+    pub const DEFAULT_LIMIT: usize = 50;
+    pub const MAX_LIMIT: usize = 200;
+
     pub fn favorite_filter(&self) -> Option<bool> {
         self.favorited.or(self.bookmarked)
+    }
+
+    pub fn read_filter(&self) -> Option<bool> {
+        self.read
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
+            .unwrap_or(Self::DEFAULT_LIMIT)
+            .clamp(1, Self::MAX_LIMIT)
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset.unwrap_or(0)
     }
 }
 

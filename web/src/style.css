@@ -283,6 +283,15 @@ button {
   color: var(--primary);
 }
 
+.feed-notice {
+  margin: 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background-color: rgba(255, 110, 132, 0.08);
+  color: var(--error);
+  font-size: 0.8rem;
+}
+
 .feed-items-container {
   flex: 1;
   overflow-y: auto;
@@ -352,6 +361,27 @@ button {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.feed-pagination {
+  padding: 0.85rem 1.25rem 1rem;
+  border-top: 1px solid var(--surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.feed-pagination-summary,
+.feed-pagination-page {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.feed-pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .agent-preview {

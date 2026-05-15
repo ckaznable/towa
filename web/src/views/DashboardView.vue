@@ -5,27 +5,29 @@ import { useDashboardFilters } from '../lib/dashboardFilters'
 import { api } from '../lib/api'
 import { renderMarkdown } from '../lib/markdown'
 import type {
-  AgentSummary,
   ArticleDetail,
   ArticleListItem,
+  ArticleListResponse,
   ProcessingStatus,
 } from '../lib/types'
 
 const route = useRoute()
+const PAGE_SIZE = 50
 
 type ViewMode = 'stream' | 'favorites'
 
-const agents = ref<AgentSummary[]>([])
-const favoriteArticles = ref<ArticleListItem[]>([])
+const articlePage = ref<ArticleListResponse>(emptyArticlePage())
 const articleDetail = ref<ArticleDetail | null>(null)
 const selectedArticleId = ref<string | null>(null)
+const currentPage = ref(1)
 const unreadOnly = ref(false)
 const {
   sources,
-  streamArticles,
-  refreshStreamArticles,
   refreshDashboardFilters,
+  unreadTotal,
+  sourceUnreadCount,
   syncStreamArticleReadState,
+  streamRevision,
 } = useDashboardFilters()
 
 const currentView = computed<ViewMode>(() => {
@@ -57,25 +59,29 @@ const articleEmptyTitle = computed(() => {
   return 'No stories in this lane'
 })
 
-const articles = computed(() =>
-  currentView.value === 'favorites' ? favoriteArticles.value : streamArticles.value,
+const articles = computed(() => articlePage.value.items)
+const pageCount = computed(() =>
+  articlePage.value.total === 0 ? 1 : Math.ceil(articlePage.value.total / articlePage.value.limit),
 )
+const pageStart = computed(() => {
+  if (articlePage.value.total === 0) return 0
+  return articlePage.value.offset + 1
+})
+const pageEnd = computed(() => articlePage.value.offset + articlePage.value.items.length)
+const hasPreviousPage = computed(() => currentPage.value > 1)
+const hasNextPage = computed(() => articlePage.value.has_more)
+const unreadCount = computed(() => {
+  if (currentView.value === 'stream') {
+    return selectedSourceId.value ? sourceUnreadCount(selectedSourceId.value) : unreadTotal.value
+  }
+  return articles.value.filter((article) => !article.read).length
+})
 
-const readyArticles = computed(() =>
-  articles.value.filter((article) => article.llm_status === 'done'),
+const visibleArticles = computed(() => articles.value)
+
+const unreadLabel = computed(() =>
+  currentView.value === 'favorites' ? 'Unread' : `Unread ${unreadCount.value}`,
 )
-
-const visibleArticles = computed(() =>
-  readyArticles.value.filter((article) => {
-    const matchesSource =
-      currentView.value === 'favorites' || !selectedSourceId.value
-        ? true
-        : article.source_id === selectedSourceId.value
-    return matchesSource && (!unreadOnly.value || !article.read)
-  }),
-)
-
-const unreadCount = computed(() => visibleArticles.value.filter((article) => !article.read).length)
 
 onMounted(async () => {
   await bootstrap()
@@ -84,15 +90,29 @@ onMounted(async () => {
 watch(
   () => [route.query.view, route.query.source],
   () => {
-    refreshArticles(false, false)
+    currentPage.value = 1
+    selectedArticleId.value = null
+    void refreshArticles(false)
   },
 )
+
+watch(unreadOnly, () => {
+  currentPage.value = 1
+  selectedArticleId.value = null
+  void refreshArticles(false)
+})
+
+watch(streamRevision, () => {
+  if (currentView.value === 'stream') {
+    void refreshArticles(true)
+  }
+})
 
 async function bootstrap() {
   loadingState.booting = true
   try {
-    await Promise.all([refreshAgents(), refreshDashboardFilters()])
-    await refreshArticles(false, false)
+    await refreshDashboardFilters()
+    await refreshArticles(false)
   } catch (error) {
     setNotice(error)
   } finally {
@@ -100,16 +120,12 @@ async function bootstrap() {
   }
 }
 
-async function refreshAgents() {
-  agents.value = await api.listAgents()
-}
-
 async function refreshDashboard() {
   loadingState.refreshing = true
   notice.value = ''
   try {
-    await Promise.all([refreshAgents(), refreshDashboardFilters()])
-    await refreshArticles(true, false)
+    await refreshDashboardFilters()
+    await refreshArticles(true)
   } catch (error) {
     setNotice(error)
   } finally {
@@ -117,26 +133,46 @@ async function refreshDashboard() {
   }
 }
 
-async function refreshArticles(preserveSelection: boolean, refreshStream = currentView.value !== 'favorites') {
-  if (refreshStream) {
-    await refreshStreamArticles()
+async function refreshArticles(preserveSelection: boolean) {
+  const nextPage = await fetchArticlePage()
+  if (nextPage.items.length === 0 && nextPage.total > 0 && currentPage.value > 1) {
+    currentPage.value = Math.max(1, Math.ceil(nextPage.total / nextPage.limit))
+    if (currentPage.value !== pageFromOffset(nextPage.offset, nextPage.limit)) {
+      await refreshArticles(preserveSelection)
+      return
+    }
   }
-  const nextFavoriteArticles =
-    currentView.value === 'favorites' ? await api.listFavorites() : favoriteArticles.value
+  articlePage.value = nextPage
 
-  if (currentView.value === 'favorites') {
-    favoriteArticles.value = nextFavoriteArticles
-  }
   const nextId =
     preserveSelection &&
     selectedArticleId.value &&
-    visibleArticles.value.some((article) => article.id === selectedArticleId.value)
+    nextPage.items.some((article) => article.id === selectedArticleId.value)
       ? selectedArticleId.value
-      : (visibleArticles.value[0]?.id ?? null)
+      : (nextPage.items[0]?.id ?? null)
 
   selectedArticleId.value = nextId
   if (nextId) await loadArticleDetail(nextId, false)
   else articleDetail.value = null
+}
+
+async function fetchArticlePage() {
+  const offset = (currentPage.value - 1) * PAGE_SIZE
+  const params = {
+    limit: PAGE_SIZE,
+    offset,
+    llmStatus: 'done' as const,
+    read: unreadOnly.value ? false : undefined,
+  }
+
+  if (currentView.value === 'favorites') {
+    return api.listFavorites(params)
+  }
+
+  return api.listArticles({
+    ...params,
+    sourceId: selectedSourceId.value,
+  })
 }
 
 async function loadArticleDetail(articleId: string, markAsRead: boolean) {
@@ -172,16 +208,6 @@ async function handleArticleClick(article: ArticleListItem) {
   }
 
   await selectArticle(article.id)
-}
-
-async function toggleFavorite(articleId: string, favorited: boolean) {
-  notice.value = ''
-  try {
-    await api.setFavorite(articleId, !favorited)
-    await refreshArticles(true)
-  } catch (error) {
-    setNotice(error)
-  }
 }
 
 function setNotice(error: unknown) {
@@ -226,10 +252,73 @@ function openArticleInNewTab(url: string) {
 }
 
 function syncArticleReadState(articleId: string, read: boolean, readAt: string | null) {
-  syncStreamArticleReadState(articleId, read, readAt)
-  favoriteArticles.value = favoriteArticles.value.map((article) =>
-    article.id === articleId ? { ...article, read, read_at: readAt } : article,
-  )
+  const previous = articlePage.value.items.find((article) => article.id === articleId)
+  if (previous) {
+    syncStreamArticleReadState(previous, read)
+  }
+
+  articlePage.value = {
+    ...articlePage.value,
+    items: articlePage.value.items.map((article) =>
+      article.id === articleId ? { ...article, read, read_at: readAt } : article,
+    ),
+  }
+}
+
+function emptyArticlePage(): ArticleListResponse {
+  return {
+    items: [],
+    total: 0,
+    limit: PAGE_SIZE,
+    offset: 0,
+    has_more: false,
+  }
+}
+
+function pageFromOffset(offset: number, limit: number) {
+  return Math.floor(offset / limit) + 1
+}
+
+async function goToPreviousPage() {
+  if (!hasPreviousPage.value) return
+  currentPage.value -= 1
+  await refreshArticles(false)
+}
+
+async function goToNextPage() {
+  if (!hasNextPage.value) return
+  currentPage.value += 1
+  await refreshArticles(false)
+}
+
+function syncArticleFavoriteState(articleId: string, favorited: boolean) {
+  articlePage.value = {
+    ...articlePage.value,
+    items: articlePage.value.items.map((article) =>
+      article.id === articleId ? { ...article, favorited, bookmarked: favorited } : article,
+    ),
+  }
+
+  if (articleDetail.value?.id === articleId) {
+    articleDetail.value = {
+      ...articleDetail.value,
+      favorited,
+      bookmarked: favorited,
+    }
+  }
+}
+
+async function toggleFavorite(articleId: string, favorited: boolean) {
+  notice.value = ''
+  try {
+    await api.setFavorite(articleId, !favorited)
+    syncArticleFavoriteState(articleId, !favorited)
+    if (currentView.value === 'favorites' && favorited) {
+      await refreshArticles(true)
+    }
+  } catch (error) {
+    setNotice(error)
+  }
 }
 
 const articleBodyHtml = computed(() =>
@@ -253,13 +342,15 @@ const articleBodyHtml = computed(() =>
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: center;">
         <button class="btn-compact" :class="{ active: unreadOnly }" @click="unreadOnly = !unreadOnly">
-          Unread {{ unreadCount }}
+          {{ unreadLabel }}
         </button>
         <button class="btn-compact" @click="refreshDashboard" :disabled="loadingState.refreshing">
           {{ loadingState.refreshing ? '...' : 'Refresh' }}
         </button>
       </div>
     </header>
+
+    <p v-if="notice" class="feed-notice">{{ notice }}</p>
 
     <div class="feed-items-container">
       <div v-if="!visibleArticles.length" class="empty-panel" style="min-height: auto; padding: 3rem 1rem;">
@@ -290,6 +381,21 @@ const articleBodyHtml = computed(() =>
         </div>
       </article>
     </div>
+
+    <footer v-if="articlePage.total > 0" class="feed-pagination">
+      <span class="feed-pagination-summary">
+        {{ pageStart }}-{{ pageEnd }} / {{ articlePage.total }}
+      </span>
+      <div class="feed-pagination-controls">
+        <button class="btn-compact" :disabled="!hasPreviousPage" @click="goToPreviousPage">
+          Prev
+        </button>
+        <span class="feed-pagination-page">{{ currentPage }} / {{ pageCount }}</span>
+        <button class="btn-compact" :disabled="!hasNextPage" @click="goToNextPage">
+          Next
+        </button>
+      </div>
+    </footer>
   </section>
 
   <!-- Article Preview: Detailed view of the selected article -->

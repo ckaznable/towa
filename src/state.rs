@@ -21,9 +21,9 @@ use crate::{
     },
     domain::{
         ActiveBatchSummary, AdminProcessingOverview, AgentSummary, Article, ArticleDetail,
-        ArticleListItem, ArticleQuery, AssignAgentRequest, BulkReadStateResponse,
-        CreateSourceRequest, FailedJobSummary, FeedKind, PendingJobSummary, Source,
-        UpdateSourceRequest,
+        ArticleListResponse, ArticleQuery, ArticleUnreadCountsResponse, AssignAgentRequest,
+        BulkReadStateResponse, CreateSourceRequest, FailedJobSummary, FeedKind, PendingJobSummary,
+        Source, UpdateSourceRequest,
     },
 };
 
@@ -276,7 +276,7 @@ impl AppState {
     pub async fn list_articles(
         &self,
         query: ArticleQuery,
-    ) -> Result<Vec<ArticleListItem>, ApiError> {
+    ) -> Result<ArticleListResponse, ApiError> {
         self.inner
             .database
             .list_articles(query)
@@ -342,13 +342,39 @@ impl AppState {
         Ok(BulkReadStateResponse { updated, read_at })
     }
 
-    pub async fn list_favorites(&self) -> Result<Vec<ArticleListItem>, ApiError> {
+    pub async fn set_selection_read_state(
+        &self,
+        source_id: Option<Uuid>,
+        read: bool,
+    ) -> Result<BulkReadStateResponse, ApiError> {
+        let (updated, read_at) = self
+            .inner
+            .database
+            .set_selection_read_state(source_id, read)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(BulkReadStateResponse { updated, read_at })
+    }
+
+    pub async fn list_favorites(
+        &self,
+        mut query: ArticleQuery,
+    ) -> Result<ArticleListResponse, ApiError> {
+        query.favorited = Some(true);
         self.list_articles(ArticleQuery {
-            source_id: None,
-            favorited: Some(true),
-            bookmarked: None,
+            favorited: query.favorited,
+            ..query
         })
         .await
+    }
+
+    pub async fn article_unread_counts(&self) -> Result<ArticleUnreadCountsResponse, ApiError> {
+        self.inner
+            .database
+            .article_unread_counts()
+            .await
+            .map_err(internal_error)
     }
 
     pub async fn cleanup_expired_articles(

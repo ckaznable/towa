@@ -657,10 +657,14 @@ mod tests {
                 source_id: Some(source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
-        assert_eq!(first_batch.len(), 1);
+        assert_eq!(first_batch.items.len(), 1);
 
         state
             .apply_source_fetch_update(
@@ -682,10 +686,14 @@ mod tests {
                 source_id: Some(source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
-        assert_eq!(second_batch.len(), 1);
+        assert_eq!(second_batch.items.len(), 1);
     }
 
     #[tokio::test]
@@ -793,22 +801,33 @@ mod tests {
                 source_id: Some(source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
 
-        assert_eq!(all_articles.len(), 2);
+        assert_eq!(all_articles.items.len(), 2);
         assert!(
             all_articles
+                .items
                 .iter()
                 .all(|article| article.id != old_unbookmarked_id)
         );
         assert!(
             all_articles
+                .items
                 .iter()
                 .any(|article| article.id == old_bookmarked_id)
         );
-        assert!(all_articles.iter().any(|article| article.id == recent_id));
+        assert!(
+            all_articles
+                .items
+                .iter()
+                .any(|article| article.id == recent_id)
+        );
     }
 
     #[tokio::test]
@@ -852,10 +871,14 @@ mod tests {
                 source_id: Some(source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
-        assert!(first_batch.is_empty());
+        assert!(first_batch.items.is_empty());
 
         state
             .apply_source_fetch_update(
@@ -877,12 +900,16 @@ mod tests {
                 source_id: Some(source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
-        assert_eq!(second_batch.len(), 1);
-        assert_eq!(second_batch[0].title, "Release v1.1.0");
-        assert_eq!(second_batch[0].llm_status, ProcessingStatus::Pending);
+        assert_eq!(second_batch.items.len(), 1);
+        assert_eq!(second_batch.items[0].title, "Release v1.1.0");
+        assert_eq!(second_batch.items[0].llm_status, ProcessingStatus::Pending);
     }
 
     #[tokio::test]
@@ -935,10 +962,14 @@ mod tests {
                 source_id: Some(healthy_source.id),
                 favorited: None,
                 bookmarked: None,
+                read: None,
+                llm_status: None,
+                limit: None,
+                offset: None,
             })
             .await
             .unwrap();
-        assert_eq!(healthy_articles.len(), 1);
+        assert_eq!(healthy_articles.items.len(), 1);
     }
 
     #[test]

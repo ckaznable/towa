@@ -57,6 +57,35 @@ export interface AgentListResponse {
 
 export interface ArticleListResponse {
   items: ArticleListItem[]
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface ArticleListParams {
+  sourceId?: string | null
+  favorited?: boolean
+  bookmarked?: boolean
+  read?: boolean
+  llmStatus?: ProcessingStatus
+  limit?: number
+  offset?: number
+}
+
+export interface BulkReadStateResponse {
+  updated: number
+  read_at: string | null
+}
+
+export interface SourceUnreadCount {
+  source_id: string
+  unread: number
+}
+
+export interface ArticleUnreadCountsResponse {
+  items: SourceUnreadCount[]
+  total_unread: number
 }
 
 export interface CreateSourcePayload {

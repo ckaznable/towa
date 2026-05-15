@@ -13,7 +13,8 @@ use tokio::task;
 use uuid::Uuid;
 
 use crate::domain::{
-    Article, ArticleDetail, ArticleListItem, ArticleQuery, FeedKind, ProcessingStatus, Source,
+    Article, ArticleDetail, ArticleListItem, ArticleListResponse, ArticleQuery,
+    ArticleUnreadCountsResponse, FeedKind, ProcessingStatus, Source, SourceUnreadCount,
 };
 
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -569,13 +570,39 @@ impl Database {
         .await
     }
 
-    pub async fn list_articles(
-        &self,
-        query: ArticleQuery,
-    ) -> Result<Vec<ArticleListItem>, DbError> {
+    pub async fn list_articles(&self, query: ArticleQuery) -> Result<ArticleListResponse, DbError> {
         let path = self.path.clone();
         self.run_blocking(move || {
             let connection = open_connection(path.as_ref())?;
+            let source_id = query.source_id.map(|id| id.to_string());
+            let favorite_filter = query.favorite_filter().map(bool_to_int);
+            let read_filter = query.read_filter().map(bool_to_int);
+            let llm_status = query
+                .llm_status
+                .map(processing_status_to_str)
+                .map(str::to_string);
+            let limit = query.limit();
+            let offset = query.offset();
+            let total = connection
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM articles a
+                     INNER JOIN sources s ON s.id = a.source_id
+                     LEFT JOIN article_processing p ON p.article_id = a.id
+                     WHERE a.ignored = 0
+                       AND (?1 IS NULL OR a.source_id = ?1)
+                       AND (?2 IS NULL OR a.bookmarked = ?2)
+                       AND (?3 IS NULL OR (a.read_at IS NOT NULL) = ?3)
+                       AND (?4 IS NULL OR COALESCE(p.status, 'pending') = ?4)",
+                    params![
+                        source_id.clone(),
+                        favorite_filter,
+                        read_filter,
+                        llm_status.clone(),
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(sql_error)? as usize;
             let mut statement = connection
                 .prepare(
                     "SELECT
@@ -602,26 +629,78 @@ impl Database {
                      WHERE a.ignored = 0
                        AND (?1 IS NULL OR a.source_id = ?1)
                        AND (?2 IS NULL OR a.bookmarked = ?2)
-                     ORDER BY COALESCE(p.completed_at, a.fetched_at) DESC",
+                       AND (?3 IS NULL OR (a.read_at IS NOT NULL) = ?3)
+                       AND (?4 IS NULL OR COALESCE(p.status, 'pending') = ?4)
+                     ORDER BY COALESCE(p.completed_at, a.fetched_at) DESC
+                     LIMIT ?5 OFFSET ?6",
                 )
                 .map_err(sql_error)?;
 
-            let source_id = query.source_id.map(|id| id.to_string());
-            let favorite_filter = query.favorite_filter().map(bool_to_int);
             let items = statement
-                .query_map(params![source_id, favorite_filter], |row| {
-                    let article_row = read_article_row(row)?;
-                    Ok(ArticleListItem::from_article(
-                        article_row.article,
-                        article_row.source_title,
-                        article_row.available_at,
-                    ))
+                .query_map(
+                    params![
+                        source_id,
+                        favorite_filter,
+                        read_filter,
+                        llm_status,
+                        limit as i64,
+                        offset as i64,
+                    ],
+                    |row| {
+                        let article_row = read_article_row(row)?;
+                        Ok(ArticleListItem::from_article(
+                            article_row.article,
+                            article_row.source_title,
+                            article_row.available_at,
+                        ))
+                    },
+                )
+                .map_err(sql_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error)?;
+
+            Ok(ArticleListResponse {
+                has_more: offset + items.len() < total,
+                items,
+                limit,
+                offset,
+                total,
+            })
+        })
+        .await
+    }
+
+    pub async fn article_unread_counts(&self) -> Result<ArticleUnreadCountsResponse, DbError> {
+        let path = self.path.clone();
+        self.run_blocking(move || {
+            let connection = open_connection(path.as_ref())?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT a.source_id, COUNT(*)
+                     FROM articles a
+                     LEFT JOIN article_processing p ON p.article_id = a.id
+                     WHERE a.ignored = 0
+                       AND a.read_at IS NULL
+                       AND COALESCE(p.status, 'pending') = 'done'
+                     GROUP BY a.source_id",
+                )
+                .map_err(sql_error)?;
+
+            let items = statement
+                .query_map([], |row| {
+                    Ok(SourceUnreadCount {
+                        source_id: parse_uuid(row.get::<_, String>(0)?)?,
+                        unread: row.get::<_, i64>(1)? as usize,
+                    })
                 })
                 .map_err(sql_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql_error)?;
 
-            Ok(items)
+            Ok(ArticleUnreadCountsResponse {
+                total_unread: items.iter().map(|item| item.unread).sum(),
+                items,
+            })
         })
         .await
     }
@@ -736,6 +815,39 @@ impl Database {
             }
 
             transaction.commit().map_err(sql_error)?;
+            Ok((updated, read_at))
+        })
+        .await
+    }
+
+    pub async fn set_selection_read_state(
+        &self,
+        source_id: Option<Uuid>,
+        read: bool,
+    ) -> Result<(usize, Option<DateTime<Utc>>), DbError> {
+        let path = self.path.clone();
+        self.run_blocking(move || {
+            let connection = open_connection(path.as_ref())?;
+            let read_at = read.then(Utc::now);
+            let read_at_value = read_at.map(datetime_to_string);
+            let source_id = source_id.map(|id| id.to_string());
+            let updated = connection
+                .execute(
+                    "UPDATE articles
+                     SET read_at = ?1
+                     WHERE ignored = 0
+                       AND read_at IS NULL
+                       AND (?2 IS NULL OR source_id = ?2)
+                       AND EXISTS (
+                           SELECT 1
+                           FROM article_processing p
+                           WHERE p.article_id = articles.id
+                             AND p.status = 'done'
+                       )",
+                    params![read_at_value, source_id],
+                )
+                .map_err(sql_error)?;
+
             Ok((updated, read_at))
         })
         .await

@@ -15,9 +15,10 @@ use uuid::Uuid;
 use crate::{
     domain::{
         AdminProcessingOverview, AgentListResponse, ArticleListResponse, ArticleQuery,
-        AssignAgentRequest, BulkReadStateRequest, BulkReadStateResponse, CreateSourceRequest,
-        FavoriteRequest, HealthResponse, ReadStateRequest, RetryBatchRequest, RetryResult,
-        SourceListResponse, UpdateSourceRequest,
+        ArticleUnreadCountsResponse, AssignAgentRequest, BulkReadStateRequest,
+        BulkReadStateResponse, CreateSourceRequest, FavoriteRequest, HealthResponse,
+        ReadSelectionRequest, ReadStateRequest, RetryBatchRequest, RetryResult, SourceListResponse,
+        UpdateSourceRequest,
     },
     state::{ApiError, AppState},
 };
@@ -34,6 +35,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sources/{id}/agent", put(assign_agent))
         .route("/api/articles", get(list_articles))
         .route("/api/articles/read", put(set_bulk_read_state))
+        .route(
+            "/api/articles/read-selection",
+            put(set_selection_read_state),
+        )
+        .route("/api/articles/unread-counts", get(article_unread_counts))
         .route("/api/articles/{id}", get(get_article))
         .route("/api/articles/{id}/read", put(set_read_state))
         .route("/api/articles/{id}/favorite", put(set_favorite))
@@ -117,9 +123,7 @@ async fn list_articles(
     State(state): State<AppState>,
     Query(query): Query<ArticleQuery>,
 ) -> Result<Json<ArticleListResponse>, ApiError> {
-    Ok(Json(ArticleListResponse {
-        items: state.list_articles(query).await?,
-    }))
+    Ok(Json(state.list_articles(query).await?))
 }
 
 async fn get_article(
@@ -167,18 +171,36 @@ async fn set_bulk_read_state(
     ))
 }
 
+async fn set_selection_read_state(
+    State(state): State<AppState>,
+    Json(request): Json<ReadSelectionRequest>,
+) -> Result<Json<BulkReadStateResponse>, ApiError> {
+    Ok(Json(
+        state
+            .set_selection_read_state(request.source_id, true)
+            .await?,
+    ))
+}
+
 async fn list_bookmarks(
     State(state): State<AppState>,
+    Query(mut query): Query<ArticleQuery>,
 ) -> Result<Json<ArticleListResponse>, ApiError> {
-    list_favorites(State(state)).await
+    query.bookmarked = Some(true);
+    Ok(Json(state.list_articles(query).await?))
 }
 
 async fn list_favorites(
     State(state): State<AppState>,
+    Query(query): Query<ArticleQuery>,
 ) -> Result<Json<ArticleListResponse>, ApiError> {
-    Ok(Json(ArticleListResponse {
-        items: state.list_favorites().await?,
-    }))
+    Ok(Json(state.list_favorites(query).await?))
+}
+
+async fn article_unread_counts(
+    State(state): State<AppState>,
+) -> Result<Json<ArticleUnreadCountsResponse>, ApiError> {
+    Ok(Json(state.article_unread_counts().await?))
 }
 
 async fn admin_processing(
@@ -243,8 +265,8 @@ mod tests {
         db::FetchedArticleInput,
         domain::{
             AdminProcessingOverview, Article, ArticleDetail, ArticleListResponse,
-            BulkReadStateResponse, CreateSourceRequest, FeedKind, ProcessingStatus, RetryResult,
-            Source, SourceListResponse,
+            ArticleUnreadCountsResponse, BulkReadStateResponse, CreateSourceRequest, FeedKind,
+            ProcessingStatus, RetryResult, Source, SourceListResponse,
         },
         llm::{BatchPollResult, BatchProvider, LlmWorker, LlmWorkerError},
         scheduler::{
@@ -997,6 +1019,250 @@ mod tests {
         assert_eq!(list_payload.items.len(), 2);
         assert!(list_payload.items.iter().all(|item| item.read));
         assert!(list_payload.items.iter().all(|item| item.read_at.is_some()));
+    }
+
+    #[tokio::test]
+    async fn article_list_supports_paginated_ready_unread_queries() {
+        let (_temp_dir, state) = test_state().await;
+        let source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Pagination Feed".to_string()),
+                feed_url: "https://example.com/pagination.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+
+        for index in 0..3 {
+            state
+                .insert_article(Article {
+                    id: Uuid::new_v4(),
+                    source_id: source.id,
+                    title: format!("Ready unread {index}"),
+                    summary: format!("Ready unread {index}"),
+                    content: format!("Ready unread {index}"),
+                    url: format!("https://example.com/articles/ready-{index}"),
+                    published_at: Some(Utc::now()),
+                    fetched_at: Utc::now(),
+                    read_at: None,
+                    ignored: false,
+                    bookmarked: false,
+                    llm_status: ProcessingStatus::Done,
+                    llm_title: None,
+                    llm_summary: Some("Summarized".to_string()),
+                    llm_error: None,
+                })
+                .await
+                .unwrap();
+        }
+        state
+            .insert_article(Article {
+                id: Uuid::new_v4(),
+                source_id: source.id,
+                title: "Ready read".to_string(),
+                summary: "Ready read".to_string(),
+                content: "Ready read".to_string(),
+                url: "https://example.com/articles/ready-read".to_string(),
+                published_at: Some(Utc::now()),
+                fetched_at: Utc::now(),
+                read_at: Some(Utc::now()),
+                ignored: false,
+                bookmarked: false,
+                llm_status: ProcessingStatus::Done,
+                llm_title: None,
+                llm_summary: Some("Summarized".to_string()),
+                llm_error: None,
+            })
+            .await
+            .unwrap();
+        state
+            .insert_article(Article {
+                id: Uuid::new_v4(),
+                source_id: source.id,
+                title: "Pending unread".to_string(),
+                summary: "Pending unread".to_string(),
+                content: "Pending unread".to_string(),
+                url: "https://example.com/articles/pending-unread".to_string(),
+                published_at: Some(Utc::now()),
+                fetched_at: Utc::now(),
+                read_at: None,
+                ignored: false,
+                bookmarked: false,
+                llm_status: ProcessingStatus::Pending,
+                llm_title: None,
+                llm_summary: None,
+                llm_error: None,
+            })
+            .await
+            .unwrap();
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/articles?source_id={}&llm_status=done&read=false&limit=2&offset=1",
+                        source.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: ArticleListResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload.total, 3);
+        assert_eq!(payload.limit, 2);
+        assert_eq!(payload.offset, 1);
+        assert!(!payload.has_more);
+        assert_eq!(payload.items.len(), 2);
+        assert!(payload.items.iter().all(|item| !item.read));
+        assert!(
+            payload
+                .items
+                .iter()
+                .all(|item| item.llm_status == ProcessingStatus::Done)
+        );
+    }
+
+    #[tokio::test]
+    async fn unread_counts_and_selection_read_track_ready_articles_only() {
+        let (_temp_dir, state) = test_state().await;
+        let first_source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Unread Source A".to_string()),
+                feed_url: "https://example.com/unread-a.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+        let second_source = state
+            .create_source(CreateSourceRequest {
+                title: Some("Unread Source B".to_string()),
+                feed_url: "https://example.com/unread-b.xml".to_string(),
+                enabled: Some(true),
+                assigned_agent_id: None,
+            })
+            .await
+            .unwrap();
+
+        for (source_id, status) in [
+            (first_source.id, ProcessingStatus::Done),
+            (first_source.id, ProcessingStatus::Done),
+            (second_source.id, ProcessingStatus::Done),
+            (second_source.id, ProcessingStatus::Pending),
+        ] {
+            state
+                .insert_article(Article {
+                    id: Uuid::new_v4(),
+                    source_id,
+                    title: format!("Article {source_id}"),
+                    summary: "Unread".to_string(),
+                    content: "Unread".to_string(),
+                    url: format!("https://example.com/articles/{source_id}"),
+                    published_at: Some(Utc::now()),
+                    fetched_at: Utc::now(),
+                    read_at: None,
+                    ignored: false,
+                    bookmarked: false,
+                    llm_status: status,
+                    llm_title: None,
+                    llm_summary: (status == ProcessingStatus::Done)
+                        .then(|| "Summarized".to_string()),
+                    llm_error: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let app = build_router(state.clone());
+        let counts_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/articles/unread-counts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(counts_response.status(), StatusCode::OK);
+        let counts_bytes = to_bytes(counts_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let counts: ArticleUnreadCountsResponse = serde_json::from_slice(&counts_bytes).unwrap();
+        assert_eq!(counts.total_unread, 3);
+        assert_eq!(
+            counts
+                .items
+                .iter()
+                .find(|item| item.source_id == first_source.id)
+                .map(|item| item.unread),
+            Some(2)
+        );
+        assert_eq!(
+            counts
+                .items
+                .iter()
+                .find(|item| item.source_id == second_source.id)
+                .map(|item| item.unread),
+            Some(1)
+        );
+
+        let mark_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/articles/read-selection")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"source_id":"{}"}}"#,
+                        first_source.id
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mark_response.status(), StatusCode::OK);
+        let mark_bytes = to_bytes(mark_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let marked: BulkReadStateResponse = serde_json::from_slice(&mark_bytes).unwrap();
+        assert_eq!(marked.updated, 2);
+        assert!(marked.read_at.is_some());
+
+        let counts_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/articles/unread-counts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let counts_bytes = to_bytes(counts_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let counts: ArticleUnreadCountsResponse = serde_json::from_slice(&counts_bytes).unwrap();
+        assert_eq!(counts.total_unread, 1);
+        assert_eq!(
+            counts
+                .items
+                .iter()
+                .find(|item| item.source_id == second_source.id)
+                .map(|item| item.unread),
+            Some(1)
+        );
+        assert!(
+            counts
+                .items
+                .iter()
+                .all(|item| item.source_id != first_source.id)
+        );
     }
 
     #[tokio::test]

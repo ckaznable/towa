@@ -171,9 +171,17 @@ http://127.0.0.1:3000
 - `source_id=<uuid>`
 - `favorited=true|false`
 - `bookmarked=true|false`
+- `read=true|false`
+- `llm_status=pending|processing|done|failed`
+- `limit=<1..200>`，預設 `50`
+- `offset=<>=0>`，預設 `0`
 
 ```json
 {
+  "total": 128,
+  "limit": 50,
+  "offset": 0,
+  "has_more": true,
   "items": [
     {
       "id": "41ca1a10-d274-4fcb-b5a2-d9fcbf507ccc",
@@ -241,6 +249,34 @@ LLM 狀態語意：
 `GET /api/favorites`
 
 等同於 `GET /api/articles?favorited=true`
+
+`GET /api/articles/unread-counts`
+
+回傳所有 `llm_status=done` 且未讀文章的來源聚合：
+
+```json
+{
+  "items": [
+    {
+      "source_id": "6a6f1d6f-fb0e-482f-bd66-42de6678878f",
+      "unread": 12
+    }
+  ],
+  "total_unread": 12
+}
+```
+
+`PUT /api/articles/read-selection`
+
+將目前 stream 選取範圍內、`llm_status=done` 且未讀的文章一次標成已讀。
+
+```json
+{
+  "source_id": "6a6f1d6f-fb0e-482f-bd66-42de6678878f"
+}
+```
+
+若 `source_id` 為 `null` 或省略，代表整個 stream。
 
 相容 alias 仍保留：
 
